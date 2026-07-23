@@ -1,0 +1,1 @@
+기존 v11 규칙 대신 이 폴더의 firestore.rules 전체를 Firebase 규칙 화면에 붙여 넣고 게시하세요.

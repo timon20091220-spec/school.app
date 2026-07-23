@@ -1,0 +1,169 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && request.auth.token.email == "admin@school-fe512.firebaseapp.com";
+    }
+
+    function hasUserDocument() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isActiveStudent() {
+      return signedIn()
+        && !isAdmin()
+        && hasUserDocument()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true;
+    }
+
+    match /users/{uid} {
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.role == "student"
+        && request.resource.data.active == true;
+
+      allow read: if isAdmin()
+        || (signedIn() && request.auth.uid == uid);
+
+      allow update: if isAdmin()
+        || (
+          signedIn()
+          && request.auth.uid == uid
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.studentKey == resource.data.studentKey
+          && request.resource.data.active == resource.data.active
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    match /festivals/{festivalId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /meals/{mealId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /notices/{noticeId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /dailySchedules/{scheduleId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /adminBackups/{backupId} {
+      allow read, create, update, delete: if isAdmin();
+    }
+
+    match /media/{mediaId} {
+      allow read: if signedIn();
+
+      allow create: if isAdmin()
+        || (
+          isActiveStudent()
+          && request.resource.data.ownerUid == request.auth.uid
+          && request.resource.data.scope == "community"
+        );
+
+      allow update, delete: if isAdmin()
+        || (
+          isActiveStudent()
+          && resource.data.ownerUid == request.auth.uid
+          && resource.data.scope == "community"
+        );
+    }
+
+    match /communityPosts/{postId} {
+      allow read: if isActiveStudent() || isAdmin();
+
+      allow create: if isActiveStudent()
+        && request.resource.data.authorUid == request.auth.uid
+        && request.resource.data.anonymous == false;
+
+      allow update: if isAdmin()
+        || (
+          isActiveStudent()
+          && request.resource.data.authorUid == resource.data.authorUid
+          && request.resource.data.authorKey == resource.data.authorKey
+          && request.resource.data.authorName == resource.data.authorName
+          && request.resource.data.title == resource.data.title
+          && request.resource.data.body == resource.data.body
+          && request.resource.data.category == resource.data.category
+          && request.resource.data.image == resource.data.image
+          && request.resource.data.pinned == resource.data.pinned
+          && request.resource.data.hidden == resource.data.hidden
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    match /communityReports/{reportId} {
+      allow create: if isActiveStudent()
+        && request.resource.data.reporterUid == request.auth.uid;
+
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /reservations/{reservationId} {
+      allow create: if isActiveStudent()
+        && request.resource.data.userUid == request.auth.uid
+        && request.resource.data.studentKey
+          == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.studentKey;
+
+      allow read: if isAdmin()
+        || (
+          isActiveStudent()
+          && resource.data.userUid == request.auth.uid
+        );
+
+      allow update, delete: if isAdmin()
+        || (
+          isActiveStudent()
+          && resource.data.userUid == request.auth.uid
+        );
+    }
+
+    match /broadcastNotifications/{notificationId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /userNotifications/{uid}/items/{notificationId} {
+      allow read, create, update, delete: if isAdmin()
+        || (signedIn() && request.auth.uid == uid);
+    }
+
+    match /notificationPreferences/{uid} {
+      allow read, create, update, delete: if isAdmin()
+        || (signedIn() && request.auth.uid == uid);
+    }
+
+    match /notificationStates/{uid}/items/{notificationId} {
+      allow read, create, update, delete: if isAdmin()
+        || (signedIn() && request.auth.uid == uid);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
