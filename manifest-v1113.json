@@ -1,0 +1,32 @@
+{
+  "name": "배문고 학교 앱",
+  "short_name": "배문고",
+  "description": "배문고 통합 학교 앱 시제품 - 학생 커뮤니티 및 역할별 로그인",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f4ef",
+  "theme_color": "#111827",
+  "lang": "ko-KR",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "id": "./",
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
+  "prefer_related_applications": false,
+  "orientation": "any"
+}
