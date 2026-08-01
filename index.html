@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="배문고">
+  <meta name="description" content="배문고 통합 학교생활 앱">
+  <title>배문고 학교 앱</title>
+
+  <link rel="manifest" href="./manifest.webmanifest?v=1138">
+  <link rel="icon" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+  <link rel="stylesheet" href="./styles.css?v=1138">
+
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="dns-prefetch" href="//cdn.jsdelivr.net">
+  <link rel="preconnect" href="https://raw.githubusercontent.com" crossorigin>
+
+  <style>
+    /* styles.css가 늦더라도 로그인 화면은 즉시 보이게 하는 최소 안전 스타일 */
+    html,body{margin:0;min-height:100%;background:#f6f4ef;color:#111827}
+    #instantAuthGate{min-height:100dvh}
+    .instant-status{
+      display:flex;align-items:center;justify-content:center;gap:7px;
+      margin-top:14px;color:#667085;font:700 12px/1.4 system-ui,-apple-system,"Noto Sans KR",sans-serif
+    }
+    .instant-status i{
+      width:8px;height:8px;border-radius:50%;background:#22c55e;
+      box-shadow:0 0 0 5px rgba(34,197,94,.12);animation:instantPulse 1.1s ease-in-out infinite
+    }
+    .instant-status.error{color:#b42318}.instant-status.error i{background:#ef4444;box-shadow:0 0 0 5px rgba(239,68,68,.12);animation:none}
+    @keyframes instantPulse{50%{opacity:.35}}
+  </style>
+</head>
+<body>
+  <!-- 접속 즉시 보이는 로그인 화면. 실제 앱이 준비되면 같은 화면으로 자연스럽게 교체됩니다. -->
+  <section class="auth-gate" id="instantAuthGate">
+    <div class="auth-background"><span></span><span></span><span></span></div>
+    <div class="auth-welcome-card">
+      <div class="auth-school-mark">B</div>
+      <p class="auth-eyebrow">BAEMOON HIGH SCHOOL</p>
+      <h1>배문고등학교 앱에<br>오신 것을 환영합니다.</h1>
+      <p class="auth-description">학교 소식과 행사, 학생 커뮤니티를 한곳에서 확인하세요.</p>
+      <div class="auth-main-actions">
+        <button class="auth-primary instant-action" data-target="openStudentLogin" type="button">학생 로그인</button>
+        <button class="auth-guest instant-action" data-target="openGuestConfirm" type="button">게스트 입장</button>
+      </div>
+      <button class="auth-privacy-link instant-action" data-target="openPrivacyPolicy" type="button">개인정보 수집·이용 안내</button>
+      <button class="auth-admin-link instant-action" data-target="openAdminLogin" type="button">학교 관리자 로그인</button>
+      <div class="firebase-beta-status"><i></i><span>Firebase 실시간 연결</span></div>
+      <small>v11.38 · 빠른 입장 모드</small>
+      <div class="instant-status" id="instantStatus"><i></i><span>앱을 준비하고 있습니다.</span></div>
+    </div>
+  </section>
+
+  <script>
+  (() => {
+    'use strict';
+
+    const VERSION = '1138';
+    const CACHE_KEY = 'baemoon-base-index-static-v2';
+    const LEGACY_KEYS = [
+      'baemoon-base-index-static-v1',
+      'baemoon-base-index-68b50607-v1137',
+      'baemoon-base-index-68b50607-v1136',
+      'baemoon-base-index-68b50607-v1135',
+      'baemoon-base-index-68b50607-v1134',
+      'baemoon-base-index-68b50607-v1133',
+      'baemoon-base-index-68b50607-v1132',
+      'baemoon-base-index-68b50607-v1131',
+      'baemoon-base-index-68b50607-v1130',
+      'baemoon-base-index-68b50607-v1129'
+    ];
+
+    const SOURCES = [
+      'https://cdn.jsdelivr.net/gh/timon20091220-spec/school.app@68b50607fcd2ce5a233be1c03f091bccda420f9b/index.html',
+      'https://fastly.jsdelivr.net/gh/timon20091220-spec/school.app@68b50607fcd2ce5a233be1c03f091bccda420f9b/index.html',
+      'https://raw.githubusercontent.com/timon20091220-spec/school.app/68b50607fcd2ce5a233be1c03f091bccda420f9b/index.html'
+    ];
+
+    const statusBox = document.getElementById('instantStatus');
+    const statusText = statusBox.querySelector('span');
+    const shellButtons = [...document.querySelectorAll('.instant-action')];
+
+    let pendingTarget = '';
+    let mounting = false;
+    let appReady = false;
+
+    function setStatus(message, isError = false) {
+      statusText.textContent = message;
+      statusBox.classList.toggle('error', isError);
+    }
+
+    function prepare(html) {
+      const source = String(html || '');
+      if (!/<!doctype html|<html/i.test(source) || source.length < 10000) {
+        throw new Error('기본 화면 파일이 올바르지 않습니다.');
+      }
+
+      return source
+        .replace(/styles\.css(?:\?v=\d+)?/g, 'styles.css?v=' + VERSION)
+        .replace(/app-v1127\.js(?:\?v=\d+)?/g, 'app-v1127.js?v=' + VERSION)
+        .replace(/firebase-runtime-v1127\.js(?:\?v=\d+)?/g, 'firebase-runtime-v1127.js?v=' + VERSION)
+        .replace(/sw-v1127\.js(?:\?v=\d+)?/g, 'sw-v1127.js?v=' + VERSION)
+        .replace(/manifest\.webmanifest(?:\?v=\d+)?/g, 'manifest.webmanifest?v=' + VERSION)
+        .replace(/v11\.27/g, 'v11.38')
+        .replace(/행사를<br\s*\/?>(?:\s*)선택하세요\./g, '배문고등학교<br>행사')
+        .replace(/공개된 행사/g, '행사')
+        .replace(/회차 전체 정원/g, '기본 예약 정원')
+        .replace(/정원이 찬 뒤 대기번호를 받을 수 있습니다\./g, '예약이 완료되면 해당 시간의 번호가 바로 발급됩니다.');
+    }
+
+    function readCache() {
+      for (const key of [CACHE_KEY, ...LEGACY_KEYS]) {
+        try {
+          const value = localStorage.getItem(key);
+          if (value && value.length > 10000 && /<!doctype html|<html/i.test(value)) {
+            if (key !== CACHE_KEY) {
+              try { localStorage.setItem(CACHE_KEY, value); } catch {}
+            }
+            return value;
+          }
+        } catch {}
+      }
+      return '';
+    }
+
+    function saveCache(html) {
+      try { localStorage.setItem(CACHE_KEY, html); } catch {}
+    }
+
+    async function fetchOne(url, timeoutMs = 2600) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, {
+          mode: 'cors',
+          cache: 'force-cache',
+          signal: controller.signal
+        });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const html = await response.text();
+        if (html.length < 10000) throw new Error('파일 크기 오류');
+        return html;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function fetchFastest() {
+      const attempts = SOURCES.map(url => fetchOne(url));
+      if (typeof Promise.any === 'function') return Promise.any(attempts);
+
+      return new Promise((resolve, reject) => {
+        let failed = 0;
+        let lastError;
+        attempts.forEach(promise => promise.then(resolve).catch(error => {
+          lastError = error;
+          failed += 1;
+          if (failed === attempts.length) reject(lastError || new Error('불러오기 실패'));
+        }));
+      });
+    }
+
+    function toScriptSpec(node) {
+      return {
+        src: node.getAttribute('src') || '',
+        text: node.textContent || '',
+        attrs: [...node.attributes]
+          .filter(attr => attr.name !== 'src')
+          .map(attr => [attr.name, attr.value])
+      };
+    }
+
+    async function appendScript(spec) {
+      const script = document.createElement('script');
+      spec.attrs.forEach(([name, value]) => script.setAttribute(name, value));
+
+      if (spec.src) {
+        await new Promise((resolve, reject) => {
+          script.addEventListener('load', resolve, { once: true });
+          script.addEventListener('error', () => reject(new Error('앱 파일 로드 실패')), { once: true });
+          script.src = spec.src;
+          document.body.appendChild(script);
+        });
+        return;
+      }
+
+      const isModule = String(script.getAttribute('type') || '').toLowerCase() === 'module';
+      if (isModule) {
+        await new Promise((resolve, reject) => {
+          script.addEventListener('load', resolve, { once: true });
+          script.addEventListener('error', () => reject(new Error('앱 모듈 실행 실패')), { once: true });
+          script.textContent = spec.text;
+          document.body.appendChild(script);
+        });
+        return;
+      }
+
+      script.textContent = spec.text;
+      document.body.appendChild(script);
+    }
+
+    async function mount(baseHtml) {
+      if (mounting || appReady) return;
+      mounting = true;
+
+      const parsed = new DOMParser().parseFromString(prepare(baseHtml), 'text/html');
+      if (!parsed?.head || !parsed?.body) throw new Error('앱 화면 구성 실패');
+
+      const scripts = [...parsed.querySelectorAll('script')].map(toScriptSpec);
+      parsed.querySelectorAll('script').forEach(node => node.remove());
+
+      const headNodes = [...parsed.head.childNodes].map(node => document.importNode(node, true));
+      const bodyNodes = [...parsed.body.childNodes].map(node => document.importNode(node, true));
+
+      document.head.replaceChildren(...headNodes);
+      document.body.replaceChildren(...bodyNodes);
+
+      /* styles.css는 처음부터 같은 출처에서 불러왔으므로 보통 브라우저 캐시에서 즉시 적용됩니다. */
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      for (const spec of scripts) {
+        try {
+          await appendScript(spec);
+        } catch (error) {
+          console.error('[Baemoon instant loader]', error);
+        }
+      }
+
+      appReady = true;
+      mounting = false;
+
+      if (pendingTarget) {
+        const target = document.getElementById(pendingTarget);
+        pendingTarget = '';
+        if (target) setTimeout(() => target.click(), 0);
+      }
+    }
+
+    async function start() {
+      const cached = readCache();
+
+      if (cached) {
+        setStatus('로그인 화면을 여는 중입니다.');
+        try {
+          await mount(cached);
+        } catch (error) {
+          console.error(error);
+          setStatus('화면을 새로 준비하고 있습니다.');
+        }
+
+        /* 화면을 먼저 연 뒤 캐시는 조용히 갱신 */
+        fetchFastest().then(saveCache).catch(() => {});
+        return;
+      }
+
+      setStatus('처음 접속 화면을 준비하고 있습니다.');
+      try {
+        const html = await fetchFastest();
+        saveCache(html);
+        await mount(html);
+      } catch (error) {
+        console.error(error);
+        setStatus('인터넷 연결을 확인한 뒤 다시 눌러주세요.', true);
+        shellButtons.forEach(button => {
+          button.disabled = false;
+          button.style.opacity = '1';
+        });
+      }
+    }
+
+    shellButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        pendingTarget = button.dataset.target || '';
+        shellButtons.forEach(item => {
+          item.disabled = true;
+          item.style.opacity = '.62';
+        });
+
+        if (appReady) {
+          const target = document.getElementById(pendingTarget);
+          pendingTarget = '';
+          if (target) target.click();
+          return;
+        }
+
+        setStatus('선택한 로그인 창을 준비하고 있습니다.');
+      });
+    });
+
+    start();
+  })();
+  </script>
+</body>
+</html>
