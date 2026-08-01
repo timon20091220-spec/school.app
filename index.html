@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <title>배문고 학교생활 앱</title>
+  <link rel="manifest" href="./manifest.webmanifest?v=1131">
+  <link rel="icon" href="./icons/icon-192.png">
+  <style>
+    *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;background:#f6f4ef;color:#111827}
+    .boot{min-height:100dvh;display:grid;place-items:center;padding:24px}.card{width:min(430px,92vw);padding:30px 24px;border-radius:28px;background:#fff;box-shadow:0 20px 70px rgba(17,24,39,.12);text-align:center}.logo{width:72px;height:72px;border-radius:22px;margin:0 auto 18px;display:grid;place-items:center;background:#111827;color:#fff;font-size:30px;font-weight:900}.spinner{width:38px;height:38px;margin:22px auto 12px;border-radius:50%;border:4px solid #e5e7eb;border-top-color:#111827;animation:spin .8s linear infinite}.error{display:none;color:#b91c1c;line-height:1.6}.retry{display:none;margin:16px auto 0;border:0;border-radius:14px;padding:12px 18px;background:#111827;color:#fff;font-weight:800}@keyframes spin{to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body>
+  <main class="boot"><section class="card"><div class="logo">배</div><h1>배문고 앱을 여는 중</h1><p id="bootStatus">최신 화면을 준비하고 있습니다.</p><div class="spinner" id="bootSpinner"></div><p class="error" id="bootError"></p><button class="retry" id="bootRetry" type="button">다시 시도</button></section></main>
+  <script>
+  (()=>{
+    const VERSION='1131';
+    const CACHE_KEY='baemoon-base-index-68b50607-v1131';
+    const SOURCES=[
+      'https://raw.githubusercontent.com/timon20091220-spec/school.app/68b50607fcd2ce5a233be1c03f091bccda420f9b/index.html',
+      'https://cdn.jsdelivr.net/gh/timon20091220-spec/school.app@68b50607fcd2ce5a233be1c03f091bccda420f9b/index.html'
+    ];
+    const status=document.getElementById('bootStatus');
+    const spinner=document.getElementById('bootSpinner');
+    const error=document.getElementById('bootError');
+    const retry=document.getElementById('bootRetry');
+
+    function prepare(html){
+      let output=String(html||'');
+      if(!/<!doctype html|<html/i.test(output))throw new Error('기본 앱 화면 형식이 올바르지 않습니다.');
+      output=output
+        .replace(/styles\.css(?:\?v=\d+)?/g,'styles.css?v='+VERSION)
+        .replace(/app-v1127\.js(?:\?v=\d+)?/g,'app-v1127.js?v='+VERSION)
+        .replace(/firebase-runtime-v1127\.js(?:\?v=\d+)?/g,'firebase-runtime-v1127.js?v='+VERSION)
+        .replace(/sw-v1127\.js(?:\?v=\d+)?/g,'sw-v1127.js?v='+VERSION)
+        .replace(/manifest\.webmanifest(?:\?v=\d+)?/g,'manifest.webmanifest?v='+VERSION)
+        .replace(/v11\.27/g,'v11.31')
+        .replace(/회차 전체 정원/g,'기본 예약 정원')
+        .replace(/정원이 찬 뒤 대기번호를 받을 수 있습니다\./g,'예약이 완료되면 해당 시간의 번호가 바로 발급됩니다.');
+      const antiFouc=`<style id="bmAntiFoucV1131">html{visibility:hidden!important;background:#f6f4ef}</style><script>(()=>{let shown=false;const show=()=>{if(shown)return;shown=true;document.documentElement.style.visibility='visible';document.getElementById('bmAntiFoucV1131')?.remove()};window.addEventListener('load',show,{once:true});document.addEventListener('DOMContentLoaded',()=>requestAnimationFrame(()=>requestAnimationFrame(show)),{once:true});setTimeout(show,5000)})()<\/script>`;
+      output=output.replace('</head>',antiFouc+'</head>');
+      return output;
+    }
+
+    async function fetchBase(){
+      let lastError=null;
+      for(const url of SOURCES){
+        try{
+          const response=await fetch(url,{cache:'no-store'});
+          if(!response.ok)throw new Error('HTTP '+response.status);
+          const html=await response.text();
+          if(html.length<10000)throw new Error('기본 화면 파일이 너무 짧습니다.');
+          try{localStorage.setItem(CACHE_KEY,html)}catch{}
+          return html;
+        }catch(e){lastError=e;}
+      }
+      try{
+        const cached=localStorage.getItem(CACHE_KEY);
+        if(cached)return cached;
+      }catch{}
+      throw lastError||new Error('기본 앱 화면을 불러오지 못했습니다.');
+    }
+
+    async function start(){
+      retry.style.display='none';error.style.display='none';spinner.style.display='block';
+      status.textContent='최신 화면을 준비하고 있습니다.';
+      try{
+        const html=prepare(await fetchBase());
+        document.open();document.write(html);document.close();
+      }catch(e){
+        spinner.style.display='none';
+        status.textContent='앱을 열지 못했습니다.';
+        error.textContent='인터넷 연결을 확인한 뒤 다시 시도해주세요. ('+(e?.message||'불러오기 실패')+')';
+        error.style.display='block';retry.style.display='inline-block';
+      }
+    }
+    retry.addEventListener('click',start);
+    start();
+  })();
+  </script>
+</body>
+</html>
