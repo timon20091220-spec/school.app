@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="배문고">
+  <meta name="description" content="배문고 통합 학교생활 앱">
+  <title>배문고 학교 앱</title>
+  <link rel="manifest" href="./manifest.webmanifest?v=1142">
+  <link rel="icon" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+  <link rel="stylesheet" href="./styles.css?v=1142">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="preconnect" href="https://raw.githubusercontent.com" crossorigin>
+  <style>
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;background:#f6f4ef;color:#111827}
+    #bmBoot1142{min-height:100dvh;display:grid;place-items:center;padding:24px;font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif}
+    .bm-boot-card{width:min(390px,92vw);padding:27px 22px;border-radius:27px;background:#fff;box-shadow:0 18px 58px rgba(17,24,39,.12);text-align:center}
+    .bm-boot-logo{width:64px;height:64px;margin:0 auto 16px;border-radius:20px;display:grid;place-items:center;background:#111827;color:#fff;font-size:28px;font-weight:900}
+    .bm-boot-card h1{margin:0 0 8px;font-size:22px}.bm-boot-card p{margin:0;color:#667085;font-size:14px;line-height:1.55}
+    .bm-spinner{width:34px;height:34px;margin:18px auto 0;border:3px solid #e5e7eb;border-top-color:#111827;border-radius:50%;animation:bmSpin .72s linear infinite}
+    .bm-boot-error{display:none;margin-top:13px!important;color:#b42318!important}
+    .bm-boot-actions{display:none;gap:8px;justify-content:center;margin-top:15px}
+    .bm-boot-actions button{border:0;border-radius:13px;padding:11px 15px;font-weight:800;cursor:pointer}
+    #bmRetry1142{background:#111827;color:#fff}#bmReset1142{background:#eef0f3;color:#111827}
+    @keyframes bmSpin{to{transform:rotate(360deg)}}
+  </style>
+  <script>
+    window.__firebaseRuntimeReady=false;
+    window.__firebaseRuntimeState='loading';
+    window.__firebaseRuntimeError=null;
+    window.__setFirebaseModuleError=function(message){
+      const error=new Error(message||'Firebase 로그인 모듈을 불러오지 못했습니다.');
+      window.__firebaseRuntimeReady=false;
+      window.__firebaseRuntimeState='error';
+      window.__firebaseRuntimeError=error;
+      console.error(error);
+    };
+  </script>
+</head>
+<body>
+  <main id="bmBoot1142">
+    <section class="bm-boot-card">
+      <div class="bm-boot-logo">B</div>
+      <h1>배문고 앱을 여는 중</h1>
+      <p id="bmBootStatus1142">저장된 화면을 확인하고 있습니다.</p>
+      <div class="bm-spinner" id="bmSpinner1142"></div>
+      <p class="bm-boot-error" id="bmBootError1142"></p>
+      <div class="bm-boot-actions" id="bmBootActions1142">
+        <button id="bmRetry1142" type="button">다시 시도</button>
+        <button id="bmReset1142" type="button">캐시 초기화</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+  (()=>{
+    'use strict';
+    if(window.__BAEMOON_STATIC_BOOT_1142__)return;
+    window.__BAEMOON_STATIC_BOOT_1142__=true;
+
+    const VERSION='1142';
+    const CACHE_KEY='baemoon-base-body-v1142';
+    const OLD_KEYS=[
+      'baemoon-base-body-v1141','baemoon-base-index-68b50607-v1136','baemoon-base-index-68b50607-v1135',
+      'baemoon-base-index-68b50607-v1134','baemoon-base-index-68b50607-v1133',
+      'baemoon-base-static-v1140','baemoon-base-index-static-v2','baemoon-base-index-static-v1'
+    ];
+    const SOURCES=[
+      'https://cdn.jsdelivr.net/gh/timon20091220-spec/school.app@68b50607fcd2ce5a233be1c03f091bccda420f9b/index.html',
+      'https://fastly.jsdelivr.net/gh/timon20091220-spec/school.app@68b50607fcd2ce5a233be1c03f091bccda420f9b/index.html',
+      'https://raw.githubusercontent.com/timon20091220-spec/school.app/68b50607fcd2ce5a233be1c03f091bccda420f9b/index.html'
+    ];
+
+    const status=document.getElementById('bmBootStatus1142');
+    const spinner=document.getElementById('bmSpinner1142');
+    const errorBox=document.getElementById('bmBootError1142');
+    const actions=document.getElementById('bmBootActions1142');
+    const retry=document.getElementById('bmRetry1142');
+    const reset=document.getElementById('bmReset1142');
+    let bootPromise=null;
+
+    function validBase(value){
+      return typeof value==='string'&&value.length>50000&&/id=["']authGate["']/.test(value)&&/id=["']reservationModal["']/.test(value)&&/app-v1127\.js/.test(value);
+    }
+    function prepare(value){
+      return String(value||'')
+        .replace(/v11\.27/g,'v11.42')
+        .replace(/행사를<br\s*\/?>(?:\s*)선택하세요\./g,'배문고등학교<br>행사')
+        .replace(/공개된 행사/g,'행사')
+        .replace(/회차 전체 정원/g,'기본 예약 정원')
+        .replace(/정원이 찬 뒤 대기번호를 받을 수 있습니다\./g,'예약이 완료되면 해당 시간의 번호가 바로 발급됩니다.');
+    }
+    function readCache(){
+      for(const key of [CACHE_KEY,...OLD_KEYS]){
+        try{
+          const value=localStorage.getItem(key);
+          if(!validBase(value))continue;
+          if(key!==CACHE_KEY)try{localStorage.setItem(CACHE_KEY,value)}catch{}
+          return value;
+        }catch{}
+      }
+      return '';
+    }
+    function saveCache(value){if(validBase(value))try{localStorage.setItem(CACHE_KEY,value)}catch{}}
+    async function fetchOne(url,timeoutMs=3200){
+      const controller=new AbortController();
+      const timer=setTimeout(()=>controller.abort(),timeoutMs);
+      try{
+        const response=await fetch(url,{mode:'cors',cache:'force-cache',signal:controller.signal});
+        if(!response.ok)throw new Error('HTTP '+response.status);
+        const text=await response.text();
+        if(!validBase(text))throw new Error('화면 파일 검증 실패');
+        return text;
+      }finally{clearTimeout(timer)}
+    }
+    async function fetchFastest(){
+      const tasks=SOURCES.map(url=>fetchOne(url));
+      if(typeof Promise.any==='function')return Promise.any(tasks);
+      return new Promise((resolve,reject)=>{
+        let failed=0,lastError;
+        tasks.forEach(task=>task.then(resolve).catch(error=>{lastError=error;if(++failed===tasks.length)reject(lastError||new Error('화면을 불러오지 못했습니다.'))}));
+      });
+    }
+    function loadClassicScript(src){
+      return new Promise((resolve,reject)=>{
+        if(document.querySelector(`script[data-bm-local="${src}"]`)){resolve();return}
+        const script=document.createElement('script');
+        script.src=src;script.dataset.bmLocal=src;script.async=false;
+        script.onload=resolve;script.onerror=()=>reject(new Error('앱 파일을 불러오지 못했습니다: '+src));
+        document.body.appendChild(script);
+      });
+    }
+    function loadModuleScript(src){
+      return new Promise((resolve,reject)=>{
+        if(document.querySelector(`script[data-bm-local="${src}"]`)){resolve();return}
+        const script=document.createElement('script');
+        script.type='module';script.src=src;script.dataset.bmLocal=src;
+        script.onload=resolve;script.onerror=()=>reject(new Error('Firebase 모듈을 불러오지 못했습니다.'));
+        document.body.appendChild(script);
+      });
+    }
+    async function mount(baseHtml){
+      if(window.__BAEMOON_APP_MOUNTED__)return;
+      const parsed=new DOMParser().parseFromString(prepare(baseHtml),'text/html');
+      if(!parsed?.body||!parsed.getElementById('authGate'))throw new Error('앱 화면을 구성하지 못했습니다.');
+      parsed.querySelectorAll('script').forEach(node=>node.remove());
+      const nodes=[...parsed.body.childNodes].map(node=>document.importNode(node,true));
+
+      // The crucial fix: the document head is never replaced, and remote scripts are never run.
+      document.body.replaceChildren(...nodes);
+      window.__BAEMOON_APP_MOUNTED__=true;
+      document.documentElement.dataset.baemoonHydrated='1';
+      document.documentElement.dataset.baemoonVersion='11.42';
+
+      await loadClassicScript('./app-v1127.js?v='+VERSION);
+      await loadModuleScript('./firebase-runtime-v1127.js?v='+VERSION);
+    }
+    async function refreshCacheQuietly(){try{saveCache(await fetchFastest())}catch{}}
+    async function start(){
+      if(bootPromise)return bootPromise;
+      bootPromise=(async()=>{
+        actions.style.display='none';errorBox.style.display='none';spinner.style.display='block';
+        const cached=readCache();
+        if(cached){
+          status.textContent='앱을 여는 중입니다.';
+          await mount(cached);
+          refreshCacheQuietly();
+          return;
+        }
+        status.textContent='처음 접속 화면을 준비하고 있습니다.';
+        const remote=await fetchFastest();
+        saveCache(remote);
+        await mount(remote);
+      })().catch(error=>{
+        console.error('[Baemoon v11.42 boot]',error);
+        spinner.style.display='none';
+        status.textContent='앱을 열지 못했습니다.';
+        errorBox.textContent='인터넷 연결을 확인하고 다시 시도해주세요. ('+(error?.message||'불러오기 실패')+')';
+        errorBox.style.display='block';actions.style.display='flex';bootPromise=null;
+      });
+      return bootPromise;
+    }
+    retry.addEventListener('click',start);
+    reset.addEventListener('click',()=>{
+      try{localStorage.removeItem(CACHE_KEY);OLD_KEYS.forEach(key=>localStorage.removeItem(key))}catch{}
+      location.reload();
+    });
+    start();
+  })();
+  </script>
+</body>
+</html>
