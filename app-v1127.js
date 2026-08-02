@@ -1,0 +1,7062 @@
+const $=s=>document.querySelector(s);const $$=s=>[...document.querySelectorAll(s)];
+const KEYS={session:'bm_session_v5',today:'bm_today_v5',festivals:'bm_festivals_v5',notices:'bm_notices_v5',notifications:'bm_notifications_v5',notifyEnabled:'bm_notify_enabled_v5',reservations:'bm_reservations_v5',migration:'bm_migration_v6',community:'bm_community_v7',reports:'bm_reports_v7',accounts:'bm_accounts_v7',guestAccess:'bm_guest_access_v7',meals:'bm_meals_v10'};
+let activeSession=null
+const state={
+  screen:'home',loginRole:'student',currentFestivalId:null,managerFestivalId:null,
+  editingFestivalId:null,editingBoothId:null,editingMenuId:null,editingRestaurantId:null,
+  editingFoodItemId:null,foodRestaurantId:null,editingEventId:null,editingNoticeId:null,
+  editingTodayId:null,editingMealId:null,adminDirty:false,lastDayKey:null,
+  pendingImage:{notice:'',booth:'',menu:'',community:'',classChat:'',mapFloor:'',mapPoint:'',homeBanner:''},
+  reservationBoothId:null,currentReservationId:null,messageReservationId:null,
+  adminReservationBoothKey:null,boothSlotsDraft:[],
+  timetableDay:Math.min(4,Math.max(0,new Date().getDay()-1)),
+  communityCategory:'전체',communitySearch:'',currentPostId:null,pendingStudentSession:null,
+  deferredPrompt:null,currentMapFloor:1,adminMapFloor:1,adminMapDrafts:{},
+  editingMapPointId:null,mapPointDraftPosition:null,currentRoutePath:[],
+  suggestionMode:'public',currentSuggestionId:null,loginStatusGroup:'1',
+  classChatUnread:0,classChatInitialized:false,adminTimetableGrade:1,adminTimetableClass:1,adminTimetableDrafts:{},currentQueueBoothKey:null,qrScannerStream:null,qrScanActive:false,editingHomeBannerId:null,homeBannerIndex:0,homeBannerTimer:null,privacyPendingTarget:null,privacyBypass:false
+};
+const read=(k,fallback)=>{try{return JSON.parse(localStorage.getItem(k))??fallback}catch{return fallback}};const write=(k,v)=>localStorage.setItem(k,JSON.stringify(v));const id=()=>crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`;const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(window.__t);window.__t=setTimeout(()=>t.classList.remove('show'),2200)}
+function firebaseFriendlyMessage(error){
+  const code=String(error?.code||'');
+  const text=String(error?.message||'');
+  if(code.includes('permission-denied')||text.includes('permission-denied'))return 'Firestore 규칙이 최신 버전인지 확인해주세요.';
+  if(code.includes('unavailable')||code.includes('network')||text.includes('network'))return '인터넷 연결 또는 Firebase 접속 상태를 확인해주세요.';
+  if(code.includes('resource-exhausted')||text.includes('larger than')||text.includes('maximum size'))return '행사 사진이 많아 Firestore 문서 용량을 초과했습니다.';
+  return text||'알 수 없는 Firebase 오류가 발생했습니다.';
+}
+function setFirebaseStatus(status,title,detail){
+  const dot=$('#firebaseSyncDot'),titleEl=$('#firebaseSyncTitle'),detailEl=$('#firebaseSyncDetail');
+  if(!dot||!titleEl||!detailEl)return;
+  dot.className=`firebase-sync-dot ${status}`;
+  titleEl.textContent=title;
+  detailEl.textContent=detail;
+}
+function markAdminDirty(message='저장하지 않은 관리자 변경사항이 있습니다.'){
+  state.adminDirty=true;
+  const el=$('#adminSaveState');
+  if(el){el.className='admin-save-state';el.textContent=message}
+}
+function markAdminSaved(message='모든 관리자 변경사항이 Firebase에 저장되었습니다.'){
+  state.adminDirty=false;
+  const el=$('#adminSaveState');
+  if(el){el.className='admin-save-state success';el.textContent=message}
+}
+function markAdminSaveError(message){
+  const el=$('#adminSaveState');
+  if(el){el.className='admin-save-state error';el.textContent=message}
+}
+function session(){return activeSession}function isAdmin(){return session()?.role==='admin'}function isStudent(){return session()?.role==='student'}function isGuest(){return session()?.role==='guest'}
+function openOverlay(id){
+  const overlay=document.getElementById(id);
+  if(!overlay)return;
+  document.body.appendChild(overlay);
+  const opened=$$('.overlay.open').filter(item=>item!==overlay);
+  overlay.style.zIndex=String(1200+opened.length*20);
+  overlay.classList.add('open');
+}
+function closeOverlay(id){
+  const overlay=document.getElementById(id);
+  if(!overlay)return;
+  overlay.classList.remove('open');
+  overlay.style.removeProperty('z-index');
+}
+$$('[data-close]').forEach(b=>b.addEventListener('click',()=>closeOverlay(b.dataset.close)));$$('.overlay').forEach(o=>o.addEventListener('click',e=>{if(e.target===o&&o.id!=='passwordChangeModal')o.classList.remove('open')}));
+document.addEventListener('click',event=>{
+  const closeButton=event.target.closest('[data-close]');
+  if(!closeButton)return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeOverlay(closeButton.dataset.close);
+});
+document.addEventListener('keydown',event=>{
+  if(event.key!=='Escape')return;
+  const opened=$$('.overlay.open');
+  const top=opened.at(-1);
+  if(top&&top.id!=='passwordChangeModal')closeOverlay(top.id);
+});
+
+function formatDate(d){if(!d)return'';return new Intl.DateTimeFormat('ko-KR',{year:'numeric',month:'long',day:'numeric'}).format(new Date(`${d}T00:00:00`))}function dday(d){if(!d)return'';const t=new Date(`${d}T00:00:00`);const n=new Date();n.setHours(0,0,0,0);const x=Math.ceil((t-n)/86400000);return x>0?`D-${x}`:x===0?'D-DAY':`D+${Math.abs(x)}`}
+function guestAccess(){
+  const value=window.firebaseCache?.guestAccess??read(KEYS.guestAccess,{festivals:true,meals:false});
+  return {festivals:value?.festivals!==false,meals:value?.meals===true};
+}
+function renderGuestSettings(){
+  const access=guestAccess();
+  $$('[data-guest-setting]').forEach(input=>{
+    input.checked=!!access[input.dataset.guestSetting];
+    input.onchange=async()=>{
+      const previous=!input.checked;
+      const next={...guestAccess(),[input.dataset.guestSetting]:input.checked};
+      try{
+        if(!window.baemoonFirebase?.saveGuestAccess){
+          throw new Error('Firebase 관리자 기능을 아직 불러오는 중입니다.');
+        }
+        await window.baemoonFirebase.saveGuestAccess(next);
+        if(window.firebaseCache)window.firebaseCache.guestAccess=next;
+        write(KEYS.guestAccess,next);
+        markAdminSaved('게스트 공개 범위가 Firebase에 저장되었습니다.');
+        applyRoleVisibility();
+        renderHome();
+        toast('게스트 공개 범위를 저장했습니다.');
+      }catch(error){
+        input.checked=previous;
+        toast(firebaseFriendlyMessage(error));
+      }
+    };
+  });
+}
+function applyRoleVisibility(){
+  const guest=isGuest();
+  const access=guestAccess();
+
+  const todayHeading=$('#todayHomeHeading');
+  const todayCard=$('#todayCard');
+  const mealSection=$('#mealHomeSection');
+  const festivalSection=$('#festivalHomeSection');
+  const noticeSection=$('#schoolNoticeSection');
+
+  if(todayHeading)todayHeading.hidden=guest;
+  if(todayCard)todayCard.hidden=guest;
+  if(mealSection)mealSection.hidden=guest&&!access.meals;
+  if(festivalSection)festivalSection.hidden=guest&&!access.festivals;
+  if(noticeSection)noticeSection.hidden=guest;
+
+  $$('[data-guest-nav="guide"],[data-guest-nav="community"]').forEach(button=>{
+    button.hidden=guest;
+  });
+  $$('[data-guest-nav="festivals"]').forEach(button=>{
+    button.hidden=guest&&!access.festivals;
+  });
+
+  if(guest&&(state.screen==='guide'||state.screen==='community')){
+    state.screen='home';
+    $$('.screen').forEach(screen=>screen.classList.toggle('active',screen.dataset.screen==='home'));
+    $$('#bottomNav [data-go]').forEach(button=>button.classList.toggle('active',button.dataset.go==='home'));
+  }
+}
+function imageSrc(value){if(!value)return'';if(String(value).startsWith('media://'))return window.firebaseCache?.media?.[String(value).slice(8)]?.dataUrl||'';return value}
+function route(screen,opts={}){
+  if(!session()){showAuthGate();return}
+  
+  const access=guestAccess();
+  if(isGuest()&&(screen==='guide'||screen==='community')){
+    toast('학교 내부 메뉴는 학생만 이용할 수 있습니다.');
+    screen='home';
+  }
+  if(isGuest()&&screen==='festival'&&!access.festivals){
+    toast('현재 게스트에게 행사가 공개되지 않았습니다.');
+    screen='home';
+  }
+  state.screen=screen;$$('.screen').forEach(s=>s.classList.toggle('active',s.dataset.screen===screen));$$('#bottomNav [data-go]').forEach(b=>b.classList.toggle('active',b.dataset.go===screen));
+  $('#appShell').classList.toggle('admin-mode',screen==='admin'&&isAdmin());
+  if(screen==='admin')renderAdmin();if(screen==='festival')renderFestival();if(screen==='community')renderCommunity();if(screen==='my')renderMy();
+  applyRoleVisibility();window.scrollTo({top:0,behavior:'smooth'})
+}
+$$('[data-go]').forEach(b=>b.addEventListener('click',()=>route(b.dataset.go)));$('#brandButton').addEventListener('click',()=>route('home'));
+let serviceWorkerRegistrationPromise=null;
+function ensureServiceWorker(){
+  if(!('serviceWorker'in navigator))return Promise.resolve(null);
+  if(!serviceWorkerRegistrationPromise){
+    serviceWorkerRegistrationPromise=navigator.serviceWorker
+      .register('./sw-v1127.js',{scope:'./',updateViaCache:'none'})
+      .then(async registration=>{
+        try{await registration.update()}catch{}
+        return navigator.serviceWorker.ready;
+      })
+      .catch(error=>{
+        console.error('Service worker registration failed:',error);
+        return null;
+      });
+  }
+  return serviceWorkerRegistrationPromise;
+}
+let serviceWorkerReloading=false;
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.addEventListener('controllerchange',()=>{
+    // v11.33: 새 서비스 워커가 설치되어도 사용 중인 화면을 강제로 새로고침하지 않습니다.
+    serviceWorkerReloading=true;
+    console.info('새 서비스 워커가 준비되었습니다. 다음 실행부터 적용됩니다.');
+  });
+}
+ensureServiceWorker();
+
+function localDateKey(date=new Date()){const y=date.getFullYear(),m=String(date.getMonth()+1).padStart(2,'0'),d=String(date.getDate()).padStart(2,'0');return `${y}-${m}-${d}`}
+function migrateV6(){
+  if(localStorage.getItem(KEYS.migration))return;
+  const rawToday=read(KEYS.today,[]);
+  if(!Array.isArray(rawToday)){
+    const isSeeded=rawToday?.title==='오늘 주요 일정'&&rawToday?.summary==='12:30 버스킹 · 14:00 동아리 공연';
+    write(KEYS.today,isSeeded?[]:[{id:id(),date:localDateKey(),badge:rawToday.badge||'TODAY',title:rawToday.title||'',summary:rawToday.summary||'',startTime:'08:00',endTime:'17:00'}]);
+  }
+  const demoBooths=new Set(['미스터리 랩','배문 오락실']);
+  const demoMenus=new Set(['매콤 떡볶이','연봉 에이드']);
+  const demoEvents=new Set(['점심 버스킹','동아리 공연']);
+  const cleaned=read(KEYS.festivals,[]).map(f=>({...f,
+    booths:(f.booths||[]).filter(x=>!demoBooths.has(x.name)),
+    menus:(f.menus||[]).filter(x=>!demoMenus.has(x.name)),
+    events:(f.events||[]).filter(x=>!demoEvents.has(x.name))
+  }));
+  write(KEYS.festivals,cleaned);
+  write(KEYS.migration,true);
+}
+function seed(){
+  if(!localStorage.getItem(KEYS.today))write(KEYS.today,[]);
+  if(!localStorage.getItem(KEYS.festivals)){
+    write(KEYS.festivals,[{id:id(),name:'연봉제',year:new Date().getFullYear(),short:'YEONBONG',tagline:'학교 전체가 하나의 무대가 되는 날.',description:'관리자가 등록한 부스, 먹거리와 행사 일정을 확인하세요.',start:'',end:'',color:'#ff6038',visible:true,featured:true,booths:[],menus:[],foodVendors:[],events:[]}]);
+  }
+  if(!localStorage.getItem(KEYS.notices)){
+    const d=new Date();d.setDate(d.getDate()+18);
+    write(KEYS.notices,[{id:id(),category:'시험',audience:'2학년',title:'2학기 기말고사 안내',summary:'시험 시간표와 과목별 범위가 등록되었습니다.',body:'2학기 기말고사 시간표와 과목별 시험 범위를 확인해주세요.\n\n변경 사항이 생기면 이 공지를 통해 다시 안내합니다.',eventDate:localDateKey(d),pinned:true,image:'',createdAt:Date.now()}]);
+  }
+  if(!localStorage.getItem(KEYS.notifications))write(KEYS.notifications,[]);
+  if(!localStorage.getItem(KEYS.reservations))write(KEYS.reservations,[]);
+  if(!localStorage.getItem(KEYS.notifyEnabled))write(KEYS.notifyEnabled,true);
+  if(!localStorage.getItem(KEYS.accounts))write(KEYS.accounts,[]);
+  if(!localStorage.getItem(KEYS.guestAccess))write(KEYS.guestAccess,{festivals:true,meals:false});
+  if(!localStorage.getItem(KEYS.reports))write(KEYS.reports,[]);if(!localStorage.getItem(KEYS.meals))write(KEYS.meals,[]);
+  if(!localStorage.getItem(KEYS.community))write(KEYS.community,[{id:id(),category:'공지',title:'배문 커뮤니티 이용 안내',body:'서로를 존중하고 개인정보가 드러나는 글은 작성하지 말아주세요. 신고된 게시글은 관리자가 확인합니다.',image:'',authorKey:'admin',authorName:'관리자',authorGrade:0,anonymous:false,pinned:true,hidden:false,likes:[],comments:[],reportCount:0,createdAt:Date.now()}]);
+  migrateV6();
+}
+function festivals(){return window.firebaseCache?.festivals??[]}
+function bmDateTimeMs(value,endOfDay=false){
+  const text=String(value||'').trim();
+  if(!text)return null;
+  let source=text;
+  if(/^\d{4}-\d{2}-\d{2}$/.test(source))source+=endOfDay?'T23:59:59+09:00':'T00:00:00+09:00';
+  else if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(source))source+=(source.length===16?':00':'')+'+09:00';
+  const parsed=Date.parse(source);
+  return Number.isFinite(parsed)?parsed:null;
+}
+function festivalExpired(festival,at=Date.now()){
+  const end=bmDateTimeMs(festival?.end||festival?.start,true);
+  return end!==null&&at>end;
+}
+function boothExpired(festival,booth,at=Date.now()){
+  if(!booth)return true;
+  const operationEnd=bmDateTimeMs(booth.openEnd,true);
+  if(operationEnd!==null&&at>=operationEnd)return true;
+  const times=Array.isArray(booth.times)?booth.times.filter(Boolean):[];
+  if(times.length){
+    const timestamps=times.map(time=>bmDateTimeMs(time)).filter(value=>value!==null);
+    if(timestamps.length&&timestamps.every(value=>at>=value))return true;
+  }
+  return festivalExpired(festival,at);
+}
+function activeFestivalView(){
+  const at=Date.now();
+  return festivals().filter(item=>!festivalExpired(item,at)).map(item=>({
+    ...item,
+    booths:(item.booths||[]).filter(booth=>!boothExpired(item,booth,at)),
+    events:(item.events||[]).filter(event=>{
+      const stamp=bmDateTimeMs(`${event.date||''}${event.time?`T${event.time}`:''}`);
+      return stamp===null||stamp>at;
+    })
+  }));
+}
+function reservationScheduleActive(item,at=Date.now()){
+  const festival=festivals().find(entry=>entry.id===item?.festivalId);
+  const booth=festival?.booths?.find(entry=>entry.id===item?.boothId);
+  if(!festival||!booth||festivalExpired(festival,at)||boothExpired(festival,booth,at))return false;
+  const time=String(item?.time||'즉시 예약');
+  if(time!=='즉시 예약'){
+    const stamp=bmDateTimeMs(time);
+    if(stamp!==null&&at>=stamp)return false;
+  }
+  return true;
+}
+async function saveFestivals(v){
+  if(!isAdmin()||!window.baemoonFirebase?.saveFestivals)throw new Error('Firebase 관리자 연결이 준비되지 않았습니다.');
+  setFirebaseStatus('saving','Firebase에 저장 중','행사 변경 내용을 서버에 전송하고 있습니다.');
+  try{
+    const saved=await window.baemoonFirebase.saveFestivals(v);
+    write(KEYS.festivals,saved);
+    if(window.firebaseCache)window.firebaseCache.festivals=saved;
+    setFirebaseStatus('connected','Firebase 연결됨','행사 변경 내용이 서버에 저장되었습니다.');
+    return true;
+  }catch(error){
+    setFirebaseStatus('error','Firebase 저장 실패',firebaseFriendlyMessage(error));
+    throw error;
+  }
+}function normalizeFoodVendors(festival){
+  if(Array.isArray(festival?.foodVendors)){
+    return festival.foodVendors.map(vendor=>({
+      ...vendor,
+      foods:Array.isArray(vendor.foods)?vendor.foods:[]
+    }));
+  }
+
+  const groups=new Map();
+  for(const legacy of festival?.menus||[]){
+    const restaurantName=legacy.seller||'행사 먹거리';
+    const location=legacy.location||'위치 미정';
+    const key=`${restaurantName}__${location}`;
+    if(!groups.has(key)){
+      groups.set(key,{
+        id:`legacy-${key.replace(/[^a-zA-Z0-9가-힣]/g,'-')}`,
+        name:restaurantName,
+        operator:legacy.seller||'',
+        location,
+        foods:[]
+      });
+    }
+    groups.get(key).foods.push({
+      id:legacy.id||id(),
+      name:legacy.name||'메뉴',
+      price:Number(legacy.price||0),
+      category:legacy.category||'식사',
+      description:legacy.description||'',
+      image:legacy.image||''
+    });
+  }
+  return [...groups.values()];
+}
+function totalFoodItems(festival){
+  return normalizeFoodVendors(festival).reduce((sum,vendor)=>sum+vendor.foods.length,0);
+}
+function selectedFestival(){const fs=activeFestivalView();return fs.find(f=>f.id===state.currentFestivalId)||fs.find(f=>f.featured&&f.visible)||fs.find(f=>f.visible)||null}
+
+function meals(){return window.firebaseCache?.meals??[]}
+async function saveMeals(v){
+  if(!isAdmin()||!window.baemoonFirebase?.saveMeals)throw new Error('Firebase 관리자 연결이 준비되지 않았습니다.');
+  setFirebaseStatus('saving','Firebase에 저장 중','급식 변경 내용을 서버에 전송하고 있습니다.');
+  try{
+    const saved=await window.baemoonFirebase.saveMeals(v);
+    write(KEYS.meals,saved);
+    if(window.firebaseCache)window.firebaseCache.meals=saved;
+    setFirebaseStatus('connected','Firebase 연결됨','급식 변경 내용이 서버에 저장되었습니다.');
+    return true;
+  }catch(error){
+    setFirebaseStatus('error','Firebase 저장 실패',firebaseFriendlyMessage(error));
+    throw error;
+  }
+}
+function currentMeal(){return meals().find(m=>m.date===localDateKey())||null}
+function renderMealCard(){
+  if(isGuest()&&!guestAccess().meals){
+    $('#mealHomeSection').hidden=true;
+    return;
+  }
+  $('#mealHomeSection').hidden=false;
+  const meal=currentMeal();
+  $('#mealDateChip').textContent=new Intl.DateTimeFormat('ko-KR',{month:'numeric',day:'numeric',weekday:'short'}).format(new Date());
+  if(!meal){
+    $('#mealServingTime').textContent='중식';
+    $('#mealStatus').textContent='정보 없음';
+    $('#mealTitle').textContent='급식 정보가 없습니다.';
+    $('#mealMenuList').innerHTML='<span>관리자가 오늘의 급식을 등록하면 여기에 표시됩니다.</span>';
+    $('#mealNote').textContent='';
+    return;
+  }
+  $('#mealServingTime').textContent=meal.type||'중식';
+  $('#mealStatus').textContent=meal.time||'제공 시간 확인';
+  $('#mealTitle').textContent=`${meal.date} 급식`;
+  $('#mealMenuList').innerHTML=(meal.menus||[]).length
+    ?meal.menus.map(menu=>`<span>${esc(menu)}</span>`).join('')
+    :'<span>등록된 메뉴가 없습니다.</span>';
+  $('#mealNote').textContent=meal.note||'';
+}
+function renderAdminMeals(){
+  const today=currentMeal();
+  $('#adminMealStatus').textContent=today?'등록됨':'미등록';
+  $('#adminMealTitle').textContent=today?`${today.type||'중식'} · ${(today.menus||[]).slice(0,2).join(', ')}`:'급식 정보가 없습니다.';
+  $('#adminMealSummary').textContent=today?(today.menus||[]).join(' · '):'오늘 등록된 메뉴가 없습니다.';
+  $('#adminMealMeta').textContent=today?`${today.date} · ${today.time||'시간 미정'}`:'날짜별로 미리 등록할 수 있습니다.';
+  const list=[...meals()].sort((a,b)=>a.date.localeCompare(b.date));
+  $('#adminMealList').innerHTML=list.length?list.map(m=>{
+    const date=new Date(`${m.date}T00:00:00`);
+    return `<article class="daily-schedule-item"><div class="daily-date-box"><b>${date.getDate()}</b><span>${date.getMonth()+1}월</span></div><div><h3>${esc(m.type||'중식')} · ${esc((m.menus||[]).slice(0,2).join(', ')||'메뉴 미등록')}</h3><p>${esc(m.time||'시간 미정')} · ${(m.menus||[]).length}개 메뉴</p></div><button data-edit-meal="${m.id}">관리</button></article>`;
+  }).join(''):'<div class="admin-empty">등록된 급식 일정이 없습니다.</div>';
+  $$('[data-edit-meal]').forEach(button=>button.addEventListener('click',()=>openMealEditor(button.dataset.editMeal)));
+}
+function resetMealEditor(){
+  state.editingMealId=null;
+  $('#mealEditorTitle').textContent='날짜별 급식 추가';
+  $('#mealEditDate').value=localDateKey();
+  $('#mealEditType').value='중식';
+  $('#mealEditTime').value='12:10–13:10';
+  $('#mealEditMenus').value='';
+  $('#mealEditNote').value='';
+  $('#deleteMealButton').hidden=true;
+}
+function openMealEditor(mealId=null){
+  resetMealEditor();
+  if(mealId){
+    const meal=meals().find(item=>item.id===mealId);
+    if(!meal)return;
+    state.editingMealId=mealId;
+    $('#mealEditorTitle').textContent='급식 정보 수정';
+    $('#mealEditDate').value=meal.date;
+    $('#mealEditType').value=meal.type||'중식';
+    $('#mealEditTime').value=meal.time||'';
+    $('#mealEditMenus').value=(meal.menus||[]).join('\\n');
+    $('#mealEditNote').value=meal.note||'';
+    $('#deleteMealButton').hidden=false;
+  }
+  openOverlay('mealEditor');
+}
+
+function todaySchedules(){const v=window.firebaseCache?.dailySchedules??[];return Array.isArray(v)?v:[]}
+async function saveTodaySchedules(v){
+  if(!isAdmin()||!window.baemoonFirebase?.saveDailySchedules)throw new Error('Firebase 관리자 연결이 준비되지 않았습니다.');
+  const saved=await window.baemoonFirebase.saveDailySchedules(v);
+  write(KEYS.today,saved);if(window.firebaseCache)window.firebaseCache.dailySchedules=saved;
+  markAdminSaved('오늘의 배문이 Firebase에 저장되었습니다.');return saved;
+}
+function currentTodayEntry(){return todaySchedules().find(x=>x.date===localDateKey())||null}
+function progressForEntry(entry,now=new Date()){
+  if(!entry){
+    return Math.max(0,Math.min(100,((now.getHours()*60+now.getMinutes()+now.getSeconds()/60)/1440)*100));
+  }
+  const toMinutes=t=>{const [h,m]=String(t||'').split(':').map(Number);return h*60+m};
+  const start=toMinutes(entry.startTime||'08:00'),end=toMinutes(entry.endTime||'17:00'),cur=now.getHours()*60+now.getMinutes()+now.getSeconds()/60;
+  if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start)return 0;
+  if(cur<=start)return 0;if(cur>=end)return 100;
+  return ((cur-start)/(end-start))*100;
+}
+function renderTodayCard(){
+  const entry=currentTodayEntry(),progress=progressForEntry(entry),pct=Math.round(progress);
+  const fallback={badge:'TODAY',title:'주요 일정 없음',summary:'오늘 등록된 주요 일정이 없습니다.',startTime:'00:00',endTime:'24:00'};
+  const t=entry||fallback;
+  $('#todayBadge').textContent=t.badge||'TODAY';
+  $('#todayTitle').textContent=t.title||'주요 일정 없음';
+  $('#todaySummary').textContent=t.summary||'오늘 등록된 주요 일정이 없습니다.';
+  $('#todayProgress').style.width=`${progress}%`;
+  $('#todayProgressLabel').textContent=`${pct}%`;
+  $('#todayTimeRange').textContent=entry?`${t.startTime||'08:00'}–${t.endTime||'17:00'}`:'오늘 하루';
+  $('#todayLiveStatus').textContent=!entry?'하루 진행 중':progress<=0?'시작 전':progress>=100?'일정 종료':'일정 진행 중';
+  $('#todayDate').textContent=new Intl.DateTimeFormat('ko-KR',{month:'long',day:'numeric',weekday:'short'}).format(new Date());
+}
+function renderHome(){
+  const access=guestAccess();
+  renderTodayCard();
+  renderMealCard();
+  const fs=(isGuest()&&!access.festivals)?[]:activeFestivalView().filter(f=>f.visible);
+  $('#festivalHomeCount').textContent=`${fs.length}개`;
+  $('#festivalHomeList').innerHTML=fs.length?fs.map(f=>`<button class="festival-home-card" data-open-festival="${f.id}" style="background:linear-gradient(135deg,${f.color},#111827)"><div class="festival-card-top"><span class="card-tag">${dday(f.start)||'FESTIVAL'}</span><b>${esc(f.year)}</b></div><h3>${esc(f.name)}</h3><p>${esc(f.tagline)}</p></button>`).join(''):'<div class="festival-empty">관리자가 공개한 행사가 없습니다.</div>';
+  $$('[data-open-festival]').forEach(b=>b.addEventListener('click',()=>{state.currentFestivalId=b.dataset.openFestival;route('festival')}));
+  renderHomeReservations();renderNotices();updateFestivalNav();applyRoleVisibility();
+}
+function updateFestivalNav(){const current=activeFestivalView();const f=current.find(x=>x.featured&&x.visible)||current.find(x=>x.visible);const b=$('#festivalNavButton');if(!f){b.style.setProperty('display','none','important');$('#bottomNav').classList.add('three')}else{b.style.removeProperty('display');$('#bottomNav').classList.remove('three');$('#festivalNavLabel').textContent=f.name;$('#festivalNavIcon').textContent=f.name.slice(0,1);b.onclick=()=>{state.currentFestivalId=f.id;route('festival')}}}
+function renderFestival(){
+  const festival=selectedFestival();
+  if(!festival){toast('등록된 행사가 없습니다.');route('home');return}
+  state.currentFestivalId=festival.id;
+  $('#festivalHero').style.setProperty('--festival-color',festival.color||'#ff6038');
+  $('#festivalKicker').textContent=`BAEMOON FESTIVAL ${festival.year||''}`;
+  $('#festivalTitle').textContent=festival.name;
+  $('#festivalTagline').textContent=festival.tagline||'';
+  $('#festivalBadgeText').textContent=(festival.short||festival.name).toUpperCase();
+  $('#festivalYearBadge').textContent=String(festival.year||'').slice(-2);
+  $('#festivalDday').textContent=dday(festival.start)||'FESTIVAL';
+  $('#festivalOverviewTitle').textContent=`${festival.name} 안내`;
+  $('#festivalDescription').textContent=festival.description||'';
+  $('#festivalBoothCount').textContent=(festival.booths||[]).length;
+  $('#festivalMenuCount').textContent=totalFoodItems(festival);
+  $('#festivalEventCount').textContent=(festival.events||[]).length;
+  renderBooths(festival);
+  renderMenus(festival);
+  renderEvents(festival);
+}
+$$('#festivalTabs button').forEach(b=>b.addEventListener('click',()=>{$$('#festivalTabs button').forEach(x=>x.classList.toggle('active',x===b));$$('.festival-panel').forEach(p=>p.classList.toggle('active',p.dataset.panel===b.dataset.tab))}));
+function renderBooths(f){
+  f.booths=f.booths||[];
+  $('#reservationList').innerHTML=f.booths.length
+    ?f.booths.map(booth=>{
+      const image=imageSrc(booth.image);
+      return `<article class="reservation-card reservation-card-square">
+        <button class="reservation-card-open" data-reserve-booth="${booth.id}" type="button">
+          <div class="reservation-image" style="${image?`background-image:url('${image}')`:''}">
+            ${image?'':`<span>${esc((booth.name||'B').slice(0,1))}</span>`}
+          </div>
+          <h3>${esc(booth.name)}</h3>
+          <span class="reserve-button">${booth.times?.length?'예약':'바로 예약'}</span>
+        </button>
+      </article>`;
+    }).join('')
+    :'<div class="festival-empty">등록된 체험 부스가 없습니다.</div>';
+
+  $$('[data-reserve-booth]').forEach(button=>button.addEventListener('click',()=>{
+    openReservation(button.dataset.reserveBooth);
+  }));
+}
+function renderMenus(festival){
+  const vendors=normalizeFoodVendors(festival);
+  $('#foodList').innerHTML=vendors.length
+    ?vendors.map(vendor=>`<article class="food-vendor-card">
+      <header>
+        <div><span class="card-tag">FOOD STORE</span><h3>${esc(vendor.name)}</h3></div>
+        <p>${esc(vendor.operator||'운영 주체 미등록')} · ${esc(vendor.location||'위치 미정')}</p>
+      </header>
+      <div class="food-vendor-items">
+        ${vendor.foods.length
+          ?vendor.foods.map(food=>`<div class="food-vendor-item">
+            <div class="food-thumb ${food.image?'zoomable-image':''}" data-image="${imageSrc(food.image)}" style="${imageSrc(food.image)?`background-image:url('${imageSrc(food.image)}')`:''}">${food.image?'':esc((food.name||'?').slice(0,1))}</div>
+            <div><span>${esc(food.category||'메뉴')}</span><h4>${esc(food.name)}</h4><p>${Number(food.price||0).toLocaleString()}원${food.description?` · ${esc(food.description)}`:''}</p></div>
+          </div>`).join('')
+          :'<div class="festival-empty compact">등록된 음식이 없습니다.</div>'}
+      </div>
+    </article>`).join('')
+    :'<div class="festival-empty">등록된 식당이 없습니다.</div>';
+  bindZoomables();
+}
+function renderEvents(f){f.events=f.events||[];const ev=[...f.events].sort((a,b)=>`${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`));$('#eventTimeline').innerHTML=ev.length?ev.map(e=>`<article class="timeline-item"><time>${esc(e.time||'--:--')}</time><i></i><div><span>${esc(e.location)} · ${formatDate(e.date)}</span><h3>${esc(e.name)}</h3><p>${esc(e.description)}</p></div><button class="bell-mini" data-event-alert="${e.id}">알림</button></article>`).join(''):'<div class="festival-empty">등록된 일정이 없습니다.</div>';$$('[data-event-alert]').forEach(b=>b.addEventListener('click',()=>{const e=ev.find(x=>x.id===b.dataset.eventAlert);addNotification({title:`${f.name} · ${e.name}`,body:`${formatDate(e.date)} ${e.time} · ${e.location}`,type:'event',personal:true}).then(()=>toast('개인 일정 알림을 Firebase에 저장했습니다.')).catch(error=>toast(firebaseFriendlyMessage(error)))}))}
+function openReservation(boothId){
+  const current=session();
+  if(!['student','guest'].includes(current?.role)){
+    return toast('학생 또는 게스트로 로그인한 뒤 예약할 수 있습니다.');
+  }
+  if(current.role==='guest'&&!guestAccess().festivals){
+    return toast('현재 게스트 예약이 공개되지 않았습니다.');
+  }
+
+  const festival=selectedFestival();
+  const booth=festival?.booths?.find(item=>item.id===boothId);
+  if(!booth)return;
+  const existing=reservations().find(item=>item.boothId===boothId&&(item.userUid===current.uid||(current.studentKey&&item.studentKey===current.studentKey)));
+  if(existing){
+    toast('이미 예약된 부스입니다.');
+    openReservationDetail(existing.id);
+    return;
+  }
+
+  state.reservationBoothId=boothId;
+  $('#reservationModalTitle').textContent=booth.name;
+
+  const boothImage=imageSrc(booth.image);
+  const detailImage=$('#reservationBoothDetailImage');
+  detailImage.style.backgroundImage=boothImage?`url("${boothImage}")`:'';
+  detailImage.classList.toggle('empty',!boothImage);
+  $('#reservationBoothDetailImageFallback').hidden=!!boothImage;
+  $('#reservationBoothDetailImageFallback').textContent=(booth.name||'B').slice(0,1);
+
+  $('#reservationBoothDescription').textContent=
+    booth.description||'등록된 부스 설명이 없습니다.';
+  $('#reservationBoothLocation').textContent=
+    `위치 · ${booth.location||'미정'}`;
+  $('#reservationBoothOwner').textContent=
+    `운영 · ${booth.owner||'미정'}`;
+  $('#reservationBoothDuration').textContent=
+    `체험 · ${Number(booth.duration||0)||'-'}분`;
+  $('#reservationBoothCapacity').textContent=
+    booth.times?.length?`시간별 정원 설정 · 최소 ${Number(booth.minPeople||1)}명`:`정원 · ${Number(booth.capacity||1)}명 / 최소 ${Number(booth.minPeople||1)}명`;
+  $('#reservationModeText').textContent=booth.times?.length
+    ?'시간별 현재 예약 인원을 확인하고 원하는 시간을 선택하세요.'
+    :'예약 인원을 선택한 뒤 바로 예약합니다.';
+
+  const times=booth.times?.length?booth.times:['즉시 예약'];
+  $('#reservationTimeGrid').innerHTML=times.map((time,index)=>{
+    const availability=slotAvailability(festival,booth,time);
+    const unavailable=availability.maxForCurrentUser<availability.minPeople;
+    return `<button class="${index===0?'selected':''} ${unavailable?'slot-full':''}"
+      data-time="${esc(time)}" ${unavailable?'disabled':''}>
+      <b>${esc(time)}</b><small>${availability.reserved}/${availability.capacity}명</small>
+    </button>`;
+  }).join('');
+
+  const firstAvailable=$$('#reservationTimeGrid button').find(button=>!button.disabled);
+  $$('#reservationTimeGrid button').forEach(button=>button.classList.remove('selected'));
+  if(firstAvailable)firstAvailable.classList.add('selected');
+
+  $$('#reservationTimeGrid button').forEach(button=>button.addEventListener('click',async()=>{
+    $$('#reservationTimeGrid button').forEach(item=>item.classList.remove('selected'));
+    button.classList.add('selected');
+    updateReservationPartyAvailability(festival,booth,button.dataset.time);
+    await refreshVisibleSlotStatus(festival,booth,button.dataset.time);
+  }));
+
+  $('#reservationUserLabel').firstChild.textContent=current.role==='student'?'학생 예약자':'게스트 예약자';
+  $('#reservationUser').value=current.role==='student'
+    ?`${studentDisplayId(current)} ${current.name}`
+    :`${current.school} · ${current.name}`;
+
+  const selectedTime=firstAvailable?.dataset.time||times[0];
+  updateReservationPartyAvailability(festival,booth,selectedTime);
+  openOverlay('reservationModal');
+}
+$('#confirmReservation').addEventListener('click',async()=>{
+  const festival=selectedFestival();
+  const booth=festival?.booths?.find(item=>item.id===state.reservationBoothId);
+  const user=$('#reservationUser').value.trim();
+  if(!booth||!user)return toast('예약자 정보를 확인해주세요.');
+
+  const time=$('#reservationTimeGrid .selected')?.dataset.time||'즉시 예약';
+  const availability=slotAvailability(festival,booth,time);
+  const groupSize=Number($('#reservationPartySize').value||0);
+
+  if(!Number.isInteger(groupSize)||groupSize<availability.minPeople||groupSize>availability.capacity){
+    return toast(`예약 인원은 ${availability.minPeople}명 이상 ${availability.capacity}명 이하여야 합니다.`);
+  }
+
+  const button=$('#confirmReservation');
+  button.disabled=true;
+  button.textContent='자리 확인 중…';
+  try{
+    const result=await createReservation({
+      festivalId:festival.id,
+      festivalName:festival.name,
+      festivalStart:festival.start||'',
+      boothId:booth.id,
+      boothName:booth.name,
+      location:booth.location||'',
+      duration:Number(booth.duration||0),
+      capacity:availability.capacity,
+      minPeople:availability.minPeople,
+      groupSize,
+      user,
+      time
+    });
+
+    closeOverlay('reservationModal');
+    const issuedNumber=Number(result?.queue?.queueNumber||result?.queue?.queue_number||0);
+    if(issuedNumber){
+      toast(`${booth.name} ${groupSize}명 예약 완료 · ${time==='즉시 예약'?'즉시 예약':time} 대기번호 ${issuedNumber}번`);
+    }else{
+      toast(`${booth.name} ${groupSize}명 예약이 확정되었습니다. 번호는 MY에서 확인해주세요.`);
+    }
+    // 예약 완료에는 호출 진동을 사용하지 않습니다. 긴 진동은 관리자가 실제로 호출했을 때만 울립니다.
+    await window.baemoonFirebase.refreshReservationData().catch(()=>{});
+    renderMy();renderHomeReservations();
+  }catch(error){
+    toast(firebaseFriendlyMessage(error));
+  }finally{
+    button.disabled=false;
+    button.textContent='예약 확정';
+  }
+});
+
+function reservations(){return (window.firebaseCache?.reservations??[]).filter(item=>reservationScheduleActive(item))}
+function reservationSlots(){return window.firebaseCache?.reservationSlots??[]}
+function reservationSlotId(festivalId,boothId,time){
+  return `${festivalId}_${boothId}_${encodeURIComponent(time||'즉시 예약')}`;
+}
+function reservationSlotRecord(festivalId,boothId,time){
+  const slotId=reservationSlotId(festivalId,boothId,time);
+  return reservationSlots().find(slot=>slot.id===slotId)||null;
+}
+function ownReservationForSlot(boothId,time){
+  const current=session();
+  if(!current)return null;
+  return reservations().find(item=>
+    item.userUid===current.uid
+    &&item.boothId===boothId
+    &&String(item.time||'즉시 예약')===String(time||'즉시 예약')
+  )||null;
+}
+function boothCapacityForTime(booth,time='즉시 예약'){
+  const key=String(time||'즉시 예약');
+  return Math.max(1,Number(booth?.slotCapacities?.[key]||booth?.capacity||1));
+}
+function slotAvailability(festival,booth,time){
+  const capacity=boothCapacityForTime(booth,time);
+  const minPeople=Math.max(1,Math.min(capacity,Number(booth.minPeople||1)));
+  const maxPeople=Math.max(minPeople,Math.min(capacity,Number(booth.maxPeople||capacity)));
+  const slot=reservationSlotRecord(festival.id,booth.id,time);
+  const reserved=Math.max(0,Number(slot?.reservedPeople||0));
+  const ownSize=Math.max(0,Number(ownReservationForSlot(booth.id,time)?.groupSize||0));
+  const remainingWithOwn=Math.max(0,capacity-reserved+ownSize);
+  const maxForCurrentUser=Math.min(maxPeople,remainingWithOwn);
+  return {capacity,minPeople,maxPeople,reserved,ownSize,maxForCurrentUser,remaining:Math.max(0,capacity-reserved)};
+}
+function updateReservationPartyAvailability(festival,booth,time){
+  const availability=slotAvailability(festival,booth,time);
+  const input=$('#reservationPartySize');
+  input.min=String(availability.minPeople);
+  input.max=String(Math.max(availability.minPeople,availability.maxForCurrentUser));
+
+  const preferred=availability.ownSize||availability.minPeople;
+  input.value=String(Math.min(
+    Math.max(preferred,availability.minPeople),
+    Math.max(availability.minPeople,availability.maxForCurrentUser)
+  ));
+
+  const fullForNew=availability.maxForCurrentUser<availability.minPeople;
+  const canQueue=Boolean(booth.waitlistEnabled);
+  input.disabled=fullForNew&&!canQueue;
+  $('#confirmReservation').disabled=fullForNew&&!canQueue;
+  $('#reservationPartySizeHint').textContent=fullForNew
+    ?canQueue
+      ?`현재 ${availability.reserved}/${availability.capacity}명 · 이 시간은 정원이 가득 찼습니다.`
+      :`현재 ${availability.reserved}/${availability.capacity}명 · 예약이 마감되었습니다.`
+    :`현재 ${availability.reserved}/${availability.capacity}명 · 남은 자리 ${availability.remaining}명`;
+  return availability;
+}
+async function refreshVisibleSlotStatus(festival,booth,time){
+  const selected=$(`#reservationTimeGrid [data-time="${CSS.escape(String(time))}"]`);
+  if(selected){const small=selected.querySelector('small');if(small)small.textContent='자리 확인 중…'}
+  try{
+    const slot=await window.baemoonFirebase.getSlotStatus({festivalId:festival.id,boothId:booth.id,time});
+    if(selected){
+      const small=selected.querySelector('small');
+      if(small)small.textContent=`${slot.reservedPeople}/${slot.capacity}명`;
+      const unavailable=slot.remaining<slot.minPeople&&!slot.waitlistEnabled;
+      selected.classList.toggle('slot-full',unavailable);
+      selected.disabled=unavailable;
+    }
+    updateReservationPartyAvailability(festival,booth,time);
+    $('#reservationBoothStatus').textContent=slot.bookingClosed?'예약 마감':'예약 가능';
+    $('#reservationBoothStatus').className=`booth-status-badge ${slot.bookingClosed?'closed':'open'}`;
+    if(slot.waitingCount>0)$('#reservationWaitlistInfo').textContent=`현재 대기 ${slot.waitingCount}명`;
+    return slot;
+  }catch(error){
+    if(selected){const small=selected.querySelector('small');if(small)small.textContent='서버 확인 실패'}
+    toast(firebaseFriendlyMessage(error));
+    return null;
+  }
+}
+function reservationById(reservationId){return reservations().find(item=>item.id===reservationId)}
+function resolvedReservationInfo(reservation){
+  const festival=festivals().find(item=>item.id===reservation?.festivalId);
+  const booth=festival?.booths?.find(item=>item.id===reservation?.boothId);
+  return {
+    festivalName:reservation?.festivalName||festival?.name||'행사',
+    boothName:reservation?.boothName||booth?.name||'체험 부스',
+    location:reservation?.location||booth?.location||'장소 미정',
+    duration:reservation?.duration||booth?.duration||'',
+    time:reservation?.time||'즉시 예약',
+    user:reservation?.user||`${reservation?.studentKey||''} ${reservation?.name||''}`.trim(),
+    groupSize:Math.max(1,Number(reservation?.groupSize||1)),
+    createdAt:Number(reservation?.createdAt||Date.now())
+  };
+}
+function openReservationDetail(reservationId){
+  const reservation=reservationById(reservationId);
+  if(!reservation)return toast('예약 정보를 찾지 못했습니다.');
+  const current=session();
+  if(current?.role!=='admin'&&reservation.userUid!==current?.uid&&reservation.studentKey!==current?.studentKey){
+    return toast('본인의 예약만 확인할 수 있습니다.');
+  }
+
+  state.currentReservationId=reservationId;
+  const info=resolvedReservationInfo(reservation);
+  $('#reservationDetailTitle').textContent=`${info.boothName} 예약`;
+  $('#reservationDetailGrid').innerHTML=[
+    ['행사',info.festivalName],
+    ['체험 부스',info.boothName],
+    ['예약 시간',info.time],
+    ['예약 인원',`${info.groupSize}명`],
+    ['장소',info.location],
+    ['체험 시간',info.duration?`${info.duration}분`:'정보 없음'],
+    ['예약자',info.user],
+    ['예약한 시각',new Date(info.createdAt).toLocaleString('ko-KR')]
+  ].map(([label,value])=>`<div><span>${esc(label)}</span><b>${esc(value)}</b></div>`).join('');
+  $('#cancelReservationButton').hidden=!['student','guest'].includes(current?.role);
+  openOverlay('reservationDetailModal');
+}
+function renderHomeReservations(){
+  const section=$('#homeReservationSection');
+  const current=session();
+  if(!section)return;
+  if(!['student','guest'].includes(current?.role)){
+    section.hidden=true;
+    $('#homeReservationList').innerHTML='';
+    return;
+  }
+
+  section.hidden=false;
+  const mine=reservations()
+    .filter(item=>item.userUid===current.uid||item.studentKey===current.studentKey)
+    .sort((a,b)=>Number(a.createdAt)-Number(b.createdAt));
+  $('#homeReservationCount').textContent=`${mine.length}건`;
+  $('#homeReservationList').innerHTML=mine.length
+    ?mine.map(item=>{
+      const info=resolvedReservationInfo(item);
+      return `<button class="home-reservation-card" data-open-reservation="${item.id}">
+        <span>${esc(info.time)}</span>
+        <div><b>${esc(info.boothName)}</b><small>${esc(info.festivalName)} · ${esc(info.location)} · ${info.groupSize}명</small></div>
+        <i>상세 보기</i>
+      </button>`;
+    }).join('')
+    :'<div class="festival-empty">현재 예약한 체험이 없습니다.</div>';
+  $$('[data-open-reservation]').forEach(button=>button.addEventListener('click',()=>openReservationDetail(button.dataset.openReservation)));
+}
+async function createReservation(payload){
+  if(!window.baemoonFirebase?.createReservation)throw new Error('Cloudflare 예약 서버 연결이 준비되지 않았습니다.');
+  return window.baemoonFirebase.createReservation(payload);
+}
+function accounts(){return window.firebaseCache?.users??[]}function saveAccounts(){toast('학생 계정은 Firebase에서만 관리됩니다.')}
+function studentKey(grade,classNo,number){return `${new Date().getFullYear()}-${grade}-${String(classNo).padStart(2,'0')}-${String(number).padStart(2,'0')}`}
+function studentDisplayId(s){return `${s.grade}${String(s.classNo).padStart(2,'0')}${String(s.number).padStart(2,'0')}`}
+function renderMy(){
+  const s=session();
+  if(!s){showAuthGate();return}
+
+  if(s.role==='guest'){
+    $('#profileRole').textContent=`외부 방문자 · ${s.school||'소속 학교 미등록'}`;
+    $('#profileName').textContent=s.name||'게스트';
+    $('#profileDetail').textContent='행사·급식과 본인 예약만 이용할 수 있습니다.';
+    $('#profileAvatar').textContent=(s.name||'G').slice(0,1);
+    $('#profileLoginButton').hidden=true;
+    $('#logoutButton').hidden=false;
+  }else if(s.role==='admin'){
+    $('#profileRole').textContent='배문고 관리자';
+    $('#profileName').textContent='관리자';
+    $('#profileDetail').textContent='관리자 홈에서 콘텐츠를 관리합니다.';
+    $('#profileAvatar').textContent='AD';
+    $('#profileLoginButton').hidden=true;
+    $('#logoutButton').hidden=false;
+  }else{
+    $('#profileRole').textContent=`${s.grade}학년 ${s.classNo}반 ${s.number}번`;
+    $('#profileName').textContent=s.name;
+    $('#profileDetail').textContent=`학생 ID ${studentDisplayId(s)}`;
+    $('#profileAvatar').textContent=s.name.slice(0,1);
+    $('#profileLoginButton').hidden=true;
+    $('#logoutButton').hidden=false;
+  }
+
+  const mine=['student','guest'].includes(s.role)
+    ?reservations().filter(item=>item.userUid===s.uid||(s.studentKey&&item.studentKey===s.studentKey))
+    :[];
+  $('#reservationCount').textContent=`${mine.length}건`;
+  $('#myReservationList').innerHTML=mine.length
+    ?mine.sort((a,b)=>Number(a.createdAt)-Number(b.createdAt)).map(item=>{
+      const info=resolvedReservationInfo(item);
+      return `<button class="my-reservation-card" data-open-reservation="${item.id}">
+        <h3>${esc(info.festivalName)} · ${esc(info.boothName)}</h3>
+        <p>${esc(info.time)} · ${esc(info.location)} · ${info.groupSize}명</p>
+        <small>눌러서 상세 확인 및 취소</small>
+      </button>`;
+    }).join('')
+    :['student','guest'].includes(s.role)
+      ?'<div class="festival-empty">현재 예약한 체험이 없습니다.</div>'
+      :'';
+  $$('[data-open-reservation]').forEach(button=>button.addEventListener('click',()=>openReservationDetail(button.dataset.openReservation)));
+  renderHomeReservations();
+}
+function showAuthGate(){closeAllOverlays();$('#appShell').hidden=true;$('#appShell').style.display='none';$('#authGate').hidden=false;$('#authGate').style.display='grid';document.body.classList.add('auth-open')}
+function enterApp(defaultScreen='home'){
+  closeAllOverlays();
+  $('#authGate').hidden=true;
+  $('#authGate').style.display='none';
+  $('#appShell').hidden=false;
+  $('#appShell').style.display='block';
+  document.body.classList.remove('auth-open');
+  renderHome();
+  renderMy();
+  renderNotifications();
+  route(defaultScreen,{preview:defaultScreen==='home'});
+
+  const params=new URLSearchParams(location.search);
+  if(params.get('open')==='notifications'){
+    setTimeout(()=>{renderNotifications();openOverlay('notificationCenter')},250);
+    params.delete('open');
+    const query=params.toString();
+    history.replaceState({},'',`${location.pathname}${query?`?${query}`:''}${location.hash}`);
+  }
+}
+function closeAllOverlays(){$$('.overlay.open').forEach(x=>x.classList.remove('open'))}
+function showAuthError(id,message){const el=$(id);el.textContent=message;el.hidden=false}
+function firebaseLoadMessage(error){
+  const raw=String(error?.message||error||'');
+  if(raw.includes('FIREBASE_LOAD_TIMEOUT'))return 'Firebase 연결 준비가 오래 걸리고 있습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.';
+  if(raw.includes('Failed to fetch dynamically imported module')||raw.includes('Importing a module script failed'))return 'Firebase 파일을 불러오지 못했습니다. 페이지를 한 번 새로고침해주세요.';
+  return raw?`Firebase 연결 오류: ${raw}`:'Firebase 연결을 준비하지 못했습니다.';
+}
+async function waitForFirebaseRuntime(timeoutMs=30000){
+  const started=Date.now();
+  while(Date.now()-started<timeoutMs){
+    if(window.__firebaseRuntimeReady===true&&window.baemoonAuth)return window.baemoonAuth;
+    if(window.__firebaseRuntimeState==='error'){
+      throw window.__firebaseRuntimeError||new Error('Firebase 모듈 로딩 실패');
+    }
+    await new Promise(resolve=>setTimeout(resolve,80));
+  }
+  throw new Error('FIREBASE_LOAD_TIMEOUT');
+}
+function clearAuthErrors(){$$('.auth-inline-error').forEach(x=>{x.hidden=true;x.textContent=''})}
+function populateStudentSelectors(){
+  const fill=(element,max,suffix)=>{
+    if(!element)return;
+    const currentCount=element.options?.length||0;
+    if(currentCount===max)return;
+    element.innerHTML=Array.from({length:max},(_,index)=>
+      `<option value="${index+1}">${index+1}${suffix}</option>`
+    ).join('');
+  };
+  fill($('#studentGrade'),3,'학년');
+  fill($('#studentClass'),10,'반');
+  fill($('#studentNumber'),30,'번');
+}
+$('#openStudentLogin').addEventListener('click',()=>{
+  populateStudentSelectors();
+  clearAuthErrors();
+  $('#studentPassword').value='';
+  openOverlay('studentLoginModal');
+  requestAnimationFrame(()=>setTimeout(()=>{
+    const nameInput=$('#studentName');
+    if(nameInput){
+      nameInput.removeAttribute('readonly');
+      nameInput.focus({preventScroll:true});
+      const end=nameInput.value.length;
+      try{nameInput.setSelectionRange(end,end)}catch{}
+    }
+  },330));
+});
+$('#studentName').addEventListener('keydown',event=>{
+  if(event.key==='Enter'){
+    event.preventDefault();
+    $('#studentPassword').focus();
+  }
+});
+$('#openAdminLogin').addEventListener('click',()=>{clearAuthErrors();$('#adminLoginId').value='admin';$('#adminLoginPassword').value='';openOverlay('adminLoginModal');setTimeout(()=>$('#adminLoginPassword').focus(),50)});
+$('#openGuestConfirm').addEventListener('click',()=>{
+  $('#guestSchool').value='';
+  $('#guestName').value='';
+  $('#guestLoginError').hidden=true;
+  openOverlay('guestConfirmModal');
+  requestAnimationFrame(()=>setTimeout(()=>$('#guestSchool').focus(),220));
+});
+$('#confirmGuestEntry').addEventListener('click',async()=>{
+  if(window.__firebaseRuntimeReady)return;
+  const button=$('#confirmGuestEntry');
+  const errorBox=$('#guestLoginError');
+  button.disabled=true;
+  const original=button.textContent;
+  button.textContent='Firebase 연결 중…';
+  errorBox.hidden=true;
+  try{
+    const authApi=await waitForFirebaseRuntime();
+    await authApi.submitGuestLogin();
+  }catch(error){
+    errorBox.textContent=firebaseLoadMessage(error);
+    errorBox.hidden=false;
+  }finally{
+    button.disabled=false;
+    button.textContent=original;
+  }
+});
+$('#guestName').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();$('#confirmGuestEntry').click()}});
+$('#studentLoginSubmit').addEventListener('click',async()=>{
+  if(window.__firebaseRuntimeReady)return;
+  const button=$('#studentLoginSubmit');
+  const original=button.textContent;
+  button.disabled=true;
+  button.textContent='Firebase 연결 중…';
+  showAuthError('#studentLoginError','Firebase 연결을 준비하고 있습니다. 잠시만 기다려주세요.');
+  try{
+    const authApi=await waitForFirebaseRuntime();
+    $('#studentLoginError').hidden=true;
+    await authApi.submitStudentLogin();
+  }catch(error){
+    showAuthError('#studentLoginError',firebaseLoadMessage(error));
+  }finally{
+    button.disabled=false;
+    if(button.textContent==='Firebase 연결 중…')button.textContent=original;
+  }
+});
+
+$('#saveStudentPassword').addEventListener('click',async()=>{
+  const button=$('#saveStudentPassword');
+  const errorBox=$('#passwordChangeError');
+  errorBox.hidden=true;
+  button.disabled=true;
+  button.textContent='변경 중…';
+  try{
+    if(!window.baemoonAuth?.changeStudentPassword){
+      throw new Error('Firebase 비밀번호 변경 기능을 아직 불러오는 중입니다.');
+    }
+    await window.baemoonAuth.changeStudentPassword();
+  }catch(error){
+    errorBox.textContent=firebaseFriendlyMessage(error);
+    errorBox.hidden=false;
+  }finally{
+    button.disabled=false;
+    button.textContent='비밀번호 변경 후 시작';
+  }
+});
+async function submitAdminLogin(){
+  if(window.__firebaseRuntimeReady)return;
+  const button=$('#adminLoginSubmit');
+  const original=button.textContent;
+  button.disabled=true;
+  button.textContent='Firebase 연결 중…';
+  showAuthError('#adminLoginError','Firebase 연결을 준비하고 있습니다. 잠시만 기다려주세요.');
+  try{
+    const authApi=await waitForFirebaseRuntime();
+    $('#adminLoginError').hidden=true;
+    await authApi.submitAdminLogin();
+  }catch(error){
+    showAuthError('#adminLoginError',firebaseLoadMessage(error));
+  }finally{
+    button.disabled=false;
+    if(button.textContent==='Firebase 연결 중…')button.textContent=original;
+  }
+}
+$('#adminLoginSubmit').addEventListener('click',submitAdminLogin);
+$('#adminLoginId').addEventListener('keydown',e=>{if(e.key==='Enter')submitAdminLogin()});
+$('#adminLoginPassword').addEventListener('keydown',e=>{if(e.key==='Enter')submitAdminLogin()});
+$('#profileLoginButton').addEventListener('click',showAuthGate);$('#accountButton').addEventListener('click',()=>{if(isAdmin())route('admin');else route('my')});
+$('#myReservationsButton').addEventListener('click',()=>{
+  route('my');
+  setTimeout(()=>$('#myReservationList')?.scrollIntoView({behavior:'smooth',block:'start'}),120);
+});
+$('#cancelReservationButton').addEventListener('click',async()=>{
+  const reservationId=state.currentReservationId;
+  if(!reservationId)return;
+  if(!window.__bmAppConfirmV1130||!await window.__bmAppConfirmV1130('예약을 취소할까요?','예약과 번호가 함께 취소됩니다.','예약 취소'))return;
+  const button=$('#cancelReservationButton');
+  button.disabled=true;
+  button.textContent='취소 중…';
+  try{
+    await window.baemoonFirebase.cancelReservation(reservationId);
+    closeOverlay('reservationDetailModal');
+    state.currentReservationId=null;
+    toast('예약을 취소했습니다.');
+  }catch(error){
+    toast(firebaseFriendlyMessage(error));
+  }finally{
+    button.disabled=false;
+    button.textContent='예약 취소';
+  }
+});
+function logoutToWelcome(){activeSession=null;try{localStorage.removeItem(KEYS.session)}catch{}state.currentPostId=null;showAuthGate();toast('로그아웃되었습니다.')}
+$('#logoutButton').addEventListener('click',logoutToWelcome);
+function notices(){return window.firebaseCache?.notices??[]}
+async function saveNotices(v){
+  if(!isAdmin()||!window.baemoonFirebase?.saveNotices)throw new Error('Firebase 관리자 연결이 준비되지 않았습니다.');
+  const saved=await window.baemoonFirebase.saveNotices(v);
+  write(KEYS.notices,saved);if(window.firebaseCache)window.firebaseCache.notices=saved;
+  markAdminSaved('학교 공지가 Firebase에 저장되었습니다.');return saved;
+}function renderNotices(){
+  if(isGuest()){
+    $('#homeNoticeCount').textContent='학생 전용';
+    $('#homeNoticeList').innerHTML='';
+    return;
+  }
+  const ns=[...notices()].sort((a,b)=>Number(b.pinned)-Number(a.pinned)||b.createdAt-a.createdAt);
+  $('#homeNoticeCount').textContent=`${ns.length}건`;
+  $('#homeNoticeList').innerHTML=ns.length
+    ?ns.map(n=>`<article class="home-notice-card ${n.pinned?'pinned':''}" data-notice="${n.id}"><div class="notice-card-top"><div class="notice-card-tags"><span class="notice-category">${esc(n.category)}</span><span class="notice-category">${esc(n.audience)}</span></div><b class="notice-dday">${dday(n.eventDate)}</b></div><h3>${esc(n.title)}</h3><p>${esc(n.summary)}</p><div class="notice-open-hint"><span>세부 내용 보기</span><b>→</b></div></article>`).join('')
+    :'<div class="notice-empty">등록된 공지가 없습니다.</div>';
+  $$('[data-notice]').forEach(card=>card.addEventListener('click',()=>openNoticeDetail(card.dataset.notice)));
+}
+function openNoticeDetail(nid){const n=notices().find(x=>x.id===nid);if(!n)return;$('#noticeDetailTags').innerHTML=`<span class="notice-category">${esc(n.category)}</span><span class="notice-category">${esc(n.audience)}</span>`;$('#noticeDetailTitle').textContent=n.title;$('#noticeDetailDday').textContent=dday(n.eventDate);$('#noticeDetailMeta').textContent=`등록 ${new Date(n.createdAt).toLocaleString('ko-KR')}${n.eventDate?` · 관련일 ${formatDate(n.eventDate)}`:''}`;$('#noticeDetailBody').innerHTML=esc(n.body).replace(/\n/g,'<br>');const noticeImage=imageSrc(n.image);if(noticeImage){$('#noticeDetailImage').src=noticeImage;$('#noticeDetailImageWrap').hidden=false}else $('#noticeDetailImageWrap').hidden=true;openOverlay('noticeDetailModal');bindZoomables()}
+function resetNotice(){state.editingNoticeId=null;state.pendingImage.notice='';$('#noticeComposerTitle').textContent='새 공지 등록';['noticeTitle','noticeSummary','noticeBody','noticeEventDate','noticeImage'].forEach(x=>$('#'+x).value='');$('#noticePinned').checked=false;$('#noticePush').checked=false;previewImage('notice','')}
+function openNoticeEditor(nid=null){resetNotice();if(nid){const n=notices().find(x=>x.id===nid);state.editingNoticeId=nid;state.pendingImage.notice=n.image||'';$('#noticeComposerTitle').textContent='공지 수정';$('#noticeCategory').value=n.category;$('#noticeAudience').value=n.audience;$('#noticeTitle').value=n.title;$('#noticeSummary').value=n.summary;$('#noticeBody').value=n.body;$('#noticeEventDate').value=n.eventDate||'';$('#noticePinned').checked=!!n.pinned;previewImage('notice',n.image)}openOverlay('noticeComposer')}
+$('#openNoticeComposer').addEventListener('click',()=>openNoticeEditor());$('#saveNoticeButton').addEventListener('click',async()=>{const p={category:$('#noticeCategory').value,audience:$('#noticeAudience').value,title:$('#noticeTitle').value.trim(),summary:$('#noticeSummary').value.trim(),body:$('#noticeBody').value.trim(),eventDate:$('#noticeEventDate').value,pinned:$('#noticePinned').checked,image:state.pendingImage.notice};if(!p.title||!p.summary||!p.body)return toast('제목, 요약, 상세 내용을 입력해주세요.');let ns=notices();if(state.editingNoticeId)ns=ns.map(n=>n.id===state.editingNoticeId?{...n,...p}:n);else ns.push({id:id(),...p,createdAt:Date.now()});try{await saveNotices(ns);if($('#noticePush').checked)await addNotification({title:`학교 공지 · ${p.title}`,body:p.summary,type:'notice',audience:p.audience});closeOverlay('noticeComposer');renderHome();renderAdmin();toast('공지가 Firebase에 저장되었습니다.')}catch(error){toast(firebaseFriendlyMessage(error))}});
+function communityPosts(){return window.firebaseCache?.communityPosts??[]}function saveCommunityPosts(){toast('커뮤니티는 Firebase 연결 상태에서만 변경할 수 있습니다.')}function reports(){return window.firebaseCache?.reports??[]}function saveReports(){toast('신고 내역은 Firebase에서만 관리됩니다.')}
+
+function migrateCommunityToNamed(){
+  const list=communityPosts();
+  let changed=false;
+  const next=list.map(post=>{
+    let updated=post;
+    if(post.authorKey!=='admin'&&(post.anonymous||!post.authorClass||!post.authorNumber)){
+      const account=accounts().find(a=>a.studentKey===post.authorKey);
+      const parts=String(post.authorKey||'').split('-');
+      updated={
+        ...updated,
+        anonymous:false,
+        authorGrade:(account?.grade??post.authorGrade??Number(parts[1])??0),
+        authorClass:(account?.classNo??Number(parts[2])??0),
+        authorNumber:(account?.number??Number(parts[3])??0),
+        authorName:account?.name??post.authorName??'학생'
+      };
+      changed=true;
+    }
+    const comments=(updated.comments||[]).map(comment=>{
+      if(comment.authorKey&&String(comment.authorLabel||'').includes('익명')){
+        changed=true;
+        return {...comment,authorLabel:studentIdentityFromKey(comment.authorKey,'학생')};
+      }
+      return comment;
+    });
+    return {...updated,comments};
+  });
+  if(changed)saveCommunityPosts(next);
+}
+
+function visibleCommunityPosts(){return communityPosts().filter(p=>!p.hidden||isAdmin())}
+function studentIdentityFromKey(key,name='학생'){
+  const account=accounts().find(a=>a.studentKey===key);
+  if(account)return `${account.grade}학년 ${account.classNo}반 ${account.number}번 ${account.name}`;
+  const parts=String(key||'').split('-');
+  if(parts.length>=4)return `${Number(parts[1])}학년 ${Number(parts[2])}반 ${Number(parts[3])}번 ${name}`;
+  return name;
+}
+function communityAuthorLabel(post){
+  if(post.authorKey==='admin')return '학교 관리자';
+  if(post.authorGrade&&post.authorClass&&post.authorNumber){
+    return `${post.authorGrade}학년 ${post.authorClass}반 ${post.authorNumber}번 ${post.authorName}`;
+  }
+  return studentIdentityFromKey(post.authorKey,post.authorName);
+}
+function renderCommunity(){const access=guestAccess(),banner=$('#communityAccessBanner'),writeButton=$('#openCommunityComposer');banner.hidden=true;writeButton.hidden=!isStudent();if(isGuest()){banner.hidden=false;banner.textContent='학생 커뮤니티는 배문고 학생 전용입니다.';$('#communityFeed').innerHTML='<div class="community-locked">게스트는 학교 내부 커뮤니티를 이용할 수 없습니다.</div>';$('#communitySearch').disabled=true;return}$('#communitySearch').disabled=false;const q=state.communitySearch.toLowerCase(),posts=[...visibleCommunityPosts()].filter(p=>(state.communityCategory==='전체'||p.category===state.communityCategory)&&(!q||`${p.title} ${p.body}`.toLowerCase().includes(q))).sort((a,b)=>Number(b.pinned)-Number(a.pinned)||b.createdAt-a.createdAt);$('#communityFeed').innerHTML=posts.length?posts.map(p=>`<article class="community-post-card ${p.pinned?'pinned':''}" data-community-post="${p.id}"><div class="community-post-top"><div class="community-post-author"><span class="community-avatar">${p.authorKey==='admin'?'A':esc((p.authorName||'학').slice(0,1))}</span><div class="community-author-copy"><b>${esc(communityAuthorLabel(p))}</b><span>${esc(p.category)}${p.pinned?' · 상단 고정':''}</span></div></div><span class="community-post-time">${new Date(p.createdAt).toLocaleDateString('ko-KR')}</span></div><h3>${esc(p.title)}</h3><p>${esc(p.body)}</p><div class="community-post-footer"><span>♡ ${(p.likes||[]).length}</span><span>댓글 ${(p.comments||[]).length}</span>${p.reportCount?`<span>신고 ${p.reportCount}</span>`:''}</div></article>`).join(''):'<div class="community-empty">등록된 게시글이 없습니다.</div>';$$('[data-community-post]').forEach(c=>c.addEventListener('click',()=>openCommunityDetail(c.dataset.communityPost)))}
+$('#communityCategories').addEventListener('click',e=>{const b=e.target.closest('[data-community-category]');if(!b)return;$$('[data-community-category]').forEach(x=>x.classList.toggle('active',x===b));state.communityCategory=b.dataset.communityCategory;renderCommunity()});
+$('#communitySearch').addEventListener('input',e=>{state.communitySearch=e.target.value.trim();renderCommunity()});
+function resetCommunityComposer(){state.pendingImage.community='';$('#communityPostCategory').value='자유';$('#communityPostTitle').value='';$('#communityPostBody').value='';$('#communityPostImage').value='';previewCommunityImage('')}
+function previewCommunityImage(data){state.pendingImage.community=data||'';const src=imageSrc(data);if(src){$('#communityImagePreviewImg').src=src;$('#communityImagePreview').hidden=false}else{$('#communityImagePreview').hidden=true;$('#communityImagePreviewImg').removeAttribute('src')}}
+$('#openCommunityComposer').addEventListener('click',()=>{if(!isStudent())return toast('학생 로그인 후 글을 작성할 수 있습니다.');resetCommunityComposer();openOverlay('communityComposer')});
+$('#communityPostImage').addEventListener('change',async e=>{try{previewCommunityImage(await compressImage(e.target.files[0]));toast('사진을 추가했습니다.')}catch(err){toast(err.message)}});$('#removeCommunityImage').addEventListener('click',()=>previewCommunityImage(''));
+$('#saveCommunityPost').addEventListener('click',()=>{const s=session(),title=$('#communityPostTitle').value.trim(),body=$('#communityPostBody').value.trim();if(!isStudent())return toast('학생 로그인 후 이용할 수 있습니다.');if(!title||!body)return toast('제목과 내용을 입력해주세요.');const ps=communityPosts();ps.push({id:id(),category:$('#communityPostCategory').value,title,body,image:state.pendingImage.community,authorKey:s.studentKey,authorName:s.name,authorGrade:s.grade,authorClass:s.classNo,authorNumber:s.number,anonymous:false,pinned:false,hidden:false,likes:[],comments:[],reportCount:0,createdAt:Date.now()});saveCommunityPosts(ps);closeOverlay('communityComposer');renderCommunity();toast('게시글을 등록했습니다.')});
+function openCommunityDetail(postId){const p=communityPosts().find(x=>x.id===postId);if(!p||p.hidden&&!isAdmin())return;state.currentPostId=postId;$('#communityDetailTags').innerHTML=`<span class="notice-category">${esc(p.category)}</span>${p.pinned?'<span class="notice-category">상단 고정</span>':''}`;$('#communityDetailTitle').textContent=p.title;$('#communityDetailMeta').textContent=`${communityAuthorLabel(p)} · ${new Date(p.createdAt).toLocaleString('ko-KR')}`;$('#communityDetailBody').innerHTML=esc(p.body).replace(/\n/g,'<br>');const postImage=imageSrc(p.image);if(postImage){$('#communityDetailImage').src=postImage;$('#communityDetailImageWrap').hidden=false}else $('#communityDetailImageWrap').hidden=true;const key=session()?.studentKey||session()?.role||'guest';$('#communityDetailLike').disabled=isGuest();$('#communityDetailLike').classList.toggle('liked',(p.likes||[]).includes(key));$('#communityDetailLikeCount').textContent=(p.likes||[]).length;$('#communityDetailReport').hidden=isAdmin()||isGuest();$('#communityCommentForm').hidden=!isStudent();renderCommunityComments(p);openOverlay('communityDetailModal');bindZoomables()}
+function renderCommunityComments(p){$('#communityCommentCount').textContent=(p.comments||[]).length;$('#communityCommentList').innerHTML=(p.comments||[]).length?p.comments.map(c=>`<article class="community-comment"><div class="community-comment-head"><b>${esc(c.authorLabel)}</b><span>${new Date(c.createdAt).toLocaleString('ko-KR')}</span></div><p>${esc(c.body)}</p></article>`).join(''):'<div class="community-empty">첫 댓글을 남겨보세요.</div>'}
+$('#communityDetailLike').addEventListener('click',()=>{if(!isStudent())return toast('학생만 좋아요를 누를 수 있습니다.');const key=session().studentKey;saveCommunityPosts(communityPosts().map(p=>{if(p.id!==state.currentPostId)return p;const likes=p.likes||[];return {...p,likes:likes.includes(key)?likes.filter(x=>x!==key):[...likes,key]}}));openCommunityDetail(state.currentPostId);renderCommunity()});
+$('#saveCommunityComment').addEventListener('click',()=>{if(!isStudent())return toast('학생 로그인 후 댓글을 작성할 수 있습니다.');const body=$('#communityCommentInput').value.trim();if(!body)return;const s=session();saveCommunityPosts(communityPosts().map(p=>p.id===state.currentPostId?{...p,comments:[...(p.comments||[]),{id:id(),authorKey:s.studentKey,authorLabel:`${s.grade}학년 ${s.classNo}반 ${s.number}번 ${s.name}`,body,createdAt:Date.now()}]}:p));$('#communityCommentInput').value='';openCommunityDetail(state.currentPostId);renderCommunity()});
+$('#communityDetailReport').addEventListener('click',()=>openOverlay('communityReportModal'));$('#communityReportReasons').addEventListener('click',e=>{const b=e.target.closest('[data-report-reason]');if(!b)return;const key=session()?.studentKey;if(!key)return;const existing=reports().some(r=>r.postId===state.currentPostId&&r.reporterKey===key);if(existing){closeOverlay('communityReportModal');return toast('이미 신고한 게시글입니다.')}const rs=reports();rs.push({id:id(),postId:state.currentPostId,reporterKey:key,reason:b.dataset.reportReason,createdAt:Date.now()});saveReports(rs);saveCommunityPosts(communityPosts().map(p=>p.id===state.currentPostId?{...p,reportCount:(p.reportCount||0)+1}:p));closeOverlay('communityReportModal');closeOverlay('communityDetailModal');renderCommunity();toast('신고가 관리자 검토 목록에 전달되었습니다.')});
+function renderAdminCommunity(){const ps=[...communityPosts()].sort((a,b)=>(b.reportCount||0)-(a.reportCount||0)||b.createdAt-a.createdAt);$('#adminCommunityCount').textContent=`${ps.length}개`;$('#adminCommunityList').innerHTML=ps.length?ps.map(p=>`<article class="admin-community-card"><div><div class="admin-community-meta"><span class="notice-category">${esc(p.category)}</span>${p.reportCount?`<span class="notice-category">신고 ${p.reportCount}</span>`:''}${p.hidden?'<span class="notice-category">숨김</span>':''}</div><h3>${esc(p.title)}</h3><p>작성자: ${esc(p.authorName)} · ${esc(p.authorKey)} · ${new Date(p.createdAt).toLocaleString('ko-KR')}</p></div><div class="moderation-actions"><button data-admin-view-post="${p.id}">상세</button><button data-admin-pin-post="${p.id}">${p.pinned?'고정 해제':'상단 고정'}</button><button data-admin-hide-post="${p.id}">${p.hidden?'다시 공개':'숨기기'}</button><button class="danger" data-admin-delete-post="${p.id}">삭제</button></div></article>`).join(''):'<div class="admin-empty">게시글이 없습니다.</div>';$$('[data-admin-view-post]').forEach(b=>b.addEventListener('click',()=>openCommunityDetail(b.dataset.adminViewPost)));$$('[data-admin-pin-post]').forEach(b=>b.addEventListener('click',()=>{saveCommunityPosts(communityPosts().map(p=>p.id===b.dataset.adminPinPost?{...p,pinned:!p.pinned}:p));renderAdminCommunity();renderCommunity()}));$$('[data-admin-hide-post]').forEach(b=>b.addEventListener('click',()=>{saveCommunityPosts(communityPosts().map(p=>p.id===b.dataset.adminHidePost?{...p,hidden:!p.hidden}:p));renderAdminCommunity();renderCommunity()}));$$('[data-admin-delete-post]').forEach(b=>b.addEventListener('click',()=>{saveCommunityPosts(communityPosts().filter(p=>p.id!==b.dataset.adminDeletePost));saveReports(reports().filter(r=>r.postId!==b.dataset.adminDeletePost));renderAdminCommunity();renderCommunity();toast('게시글을 삭제했습니다.')}))}
+function renderAdminStudents(){
+  const list=[...accounts()].sort((a,b)=>a.grade-b.grade||a.classNo-b.classNo||a.number-b.number);
+  $('#adminStudentCount').textContent=`${list.length}명`;
+  $('#adminStudentList').innerHTML=list.length
+    ?list.map(a=>`<article class="admin-student-card"><div><span class="student-status">${a.active===false?'정지':'활성'}</span><h3>${a.grade}학년 ${a.classNo}반 ${a.number}번 ${esc(a.name)}</h3><p>${esc(a.studentKey)} · 마지막 로그인 ${a.lastLoginAt?new Date(a.lastLoginAt).toLocaleString('ko-KR'):'없음'}</p></div><div class="moderation-actions"><button data-toggle-student="${a.studentKey}">${a.active===false?'계정 복구':'계정 정지'}</button><button data-reset-student="${a.studentKey}">초기화 안내</button></div></article>`).join('')
+    :'<div class="admin-empty"><b>학생 문서가 없습니다.</b><p>학생이 같은 정보로 다시 로그인하면 users 컬렉션과 학생 문서가 자동으로 다시 생성됩니다.</p></div>';
+  $$('[data-toggle-student]').forEach(b=>b.addEventListener('click',()=>{}));
+  $$('[data-reset-student]').forEach(b=>b.addEventListener('click',()=>{}));
+}
+
+function guestAccounts(){
+  const raw=window.firebaseCache?.guestProfiles||[];
+  const latestByKey=new Map();
+
+  raw.forEach(item=>{
+    const deviceKey=String(item.deviceId||'').trim();
+    const legacyKey=`legacy:${String(item.school||'').trim().toLowerCase()}|${String(item.name||'').trim().toLowerCase()}`;
+    const key=deviceKey?`device:${deviceKey}`:legacyKey;
+    const previous=latestByKey.get(key);
+    const currentTime=Number(item.lastLoginAt||item.createdAt||0);
+    const previousTime=Number(previous?.lastLoginAt||previous?.createdAt||0);
+
+    if(!previous||currentTime>=previousTime){
+      latestByKey.set(key,item);
+    }
+  });
+
+  return [...latestByKey.values()];
+}
+function compactStudentCode(account){
+  return `${Number(account.grade)}${Number(account.classNo)}${String(Number(account.number)).padStart(2,'0')}`;
+}
+function sortedStudentAccounts(){
+  return [...accounts()].sort((a,b)=>
+    Number(a.grade)-Number(b.grade)
+    ||Number(a.classNo)-Number(b.classNo)
+    ||Number(a.number)-Number(b.number)
+    ||String(a.name||'').localeCompare(String(b.name||''),'ko')
+  );
+}
+function loginGroupItems(group=state.loginStatusGroup){
+  if(group==='guest'){
+    return [...guestAccounts()].sort((a,b)=>
+      String(a.school||'').localeCompare(String(b.school||''),'ko')
+      ||String(a.name||'').localeCompare(String(b.name||''),'ko')
+    );
+  }
+  return sortedStudentAccounts().filter(account=>String(account.grade)===String(group));
+}
+function renderLoginStatusGrid(){
+  const group=state.loginStatusGroup;
+  $$('#loginStatusTabs [data-login-group]').forEach(button=>button.classList.toggle(
+    'active',button.dataset.loginGroup===group
+  ));
+  const items=loginGroupItems(group);
+  $('#loginStatusGrid').innerHTML=items.length?items.map(item=>{
+    if(group==='guest'){
+      return `<article class="login-status-cell guest">
+        <b>${esc(item.name||'게스트')} #${esc(item.guestCode||'0000')}</b>
+        <span>${esc(item.school||'소속 학교 미입력')}</span>
+      </article>`;
+    }
+    return `<article class="login-status-cell">
+      <b>${compactStudentCode(item)} ${esc(item.name||'학생')}</b>
+    </article>`;
+  }).join(''):'<div class="admin-empty">해당 그룹의 로그인 기록이 없습니다.</div>';
+}
+renderAdminStudents=function(){
+  const students=sortedStudentAccounts();
+  const guests=guestAccounts();
+  const counts={
+    1:students.filter(item=>Number(item.grade)===1).length,
+    2:students.filter(item=>Number(item.grade)===2).length,
+    3:students.filter(item=>Number(item.grade)===3).length,
+    guest:guests.length
+  };
+  $('#adminStudentCount').textContent=`${students.length+guests.length}명`;
+  $('#adminGrade1Count').textContent=`${counts[1]}명`;
+  $('#adminGrade2Count').textContent=`${counts[2]}명`;
+  $('#adminGrade3Count').textContent=`${counts[3]}명`;
+  $('#adminGuestLoginCount').textContent=`${counts.guest}명`;
+  $('#loginTabGrade1Count').textContent=counts[1];
+  $('#loginTabGrade2Count').textContent=counts[2];
+  $('#loginTabGrade3Count').textContent=counts[3];
+  $('#loginTabGuestCount').textContent=counts.guest;
+  renderLoginStatusGrid();
+};
+$('#openLoginStatusDetail').addEventListener('click',()=>{
+  state.loginStatusGroup='1';
+  renderLoginStatusGrid();
+  openOverlay('adminLoginStatusModal');
+});
+$('#loginStatusTabs').addEventListener('click',event=>{
+  const button=event.target.closest('[data-login-group]');
+  if(!button)return;
+  state.loginStatusGroup=button.dataset.loginGroup;
+  renderLoginStatusGrid();
+});
+
+function notificationMatchesAudience(item){
+  const audience=String(item?.audience||'전체').trim();
+  const current=session();
+
+  if(audience==='개인')return true;
+  if(current?.role==='admin')return true;
+  if(current?.role==='guest')return audience==='게스트';
+  if(current?.role!=='student')return false;
+  if(audience==='전체')return true;
+
+  return audience===`${current.grade}학년`
+    || audience===String(current.grade)
+    || audience===`grade-${current.grade}`;
+}
+function notificationSeenStorageKey(){
+  const current=session();
+  return `bm_device_seen_notifications_v13_${current?.uid||current?.studentKey||current?.role||'anonymous'}`;
+}
+function getDeviceSeenNotificationIds(){
+  try{return new Set(JSON.parse(localStorage.getItem(notificationSeenStorageKey())||'[]'))}
+  catch{return new Set()}
+}
+function saveDeviceSeenNotificationIds(ids){
+  localStorage.setItem(notificationSeenStorageKey(),JSON.stringify([...ids].slice(-500)));
+}
+async function showDeviceNotification(item){
+  if(!item||!notifyEnabled()||!notificationMatchesAudience(item))return;
+
+  const title=String(item.title||'배문고 알림');
+  const body=String(item.body||'');
+
+  toast(`${title}${body?` · ${body}`:''}`);
+  if(navigator.vibrate)try{navigator.vibrate([700,180,700,180,1200])}catch{}
+
+  if(!('Notification'in window)||Notification.permission!=='granted')return;
+
+  try{
+    if('serviceWorker'in navigator){
+      const registration=await ensureServiceWorker();
+      const readyRegistration=registration||await navigator.serviceWorker.ready;
+      await readyRegistration.showNotification(title,{
+        body,
+        icon:'./icons/icon-192.png',
+        badge:'./icons/icon-192.png',
+        tag:`baemoon-${item.id||Date.now()}`,
+        renotify:true,
+        data:{url:'./?open=notifications'},
+        vibrate:[700,180,700,180,1200],
+        requireInteraction:true
+      });
+    }else{
+      new Notification(title,{body,icon:'./icons/icon-192.png'});
+    }
+  }catch(error){
+    console.warn('Device notification display failed:',error);
+  }
+}
+function syncIncomingNotifications(cacheKey,items){
+  const normalized=Array.isArray(items)?items:[];
+  window.firebaseCache=window.firebaseCache||{};
+  window.firebaseCache[cacheKey]=normalized;
+  renderNotifications();
+
+  const seen=getDeviceSeenNotificationIds();
+  const recentCutoff=Date.now()-(15*60*1000);
+  const incoming=normalized
+    .filter(notificationMatchesAudience)
+    .filter(item=>item?.id&&!seen.has(item.id))
+    .filter(item=>Number(item.createdAt||0)>=recentCutoff)
+    .sort((a,b)=>Number(a.createdAt||0)-Number(b.createdAt||0));
+
+  normalized.forEach(item=>{if(item?.id)seen.add(item.id)});
+  saveDeviceSeenNotificationIds(seen);
+  incoming.forEach(item=>showDeviceNotification(item));
+}
+function handleBroadcastNotifications(items){
+  syncIncomingNotifications('notifications',items);
+}
+function handlePersonalNotifications(items){
+  syncIncomingNotifications('personalNotifications',items);
+}
+function notifications(){
+  const broadcasts=window.firebaseCache?.notifications??[],personal=window.firebaseCache?.personalNotifications??[],states=window.firebaseCache?.notificationStates??{};
+  return [...broadcasts,...personal].filter(notificationMatchesAudience).map(item=>({...item,read:!!states[item.id]?.read,hidden:!!states[item.id]?.hidden})).filter(item=>!item.hidden);
+}
+function notifyEnabled(){return window.firebaseCache?.notificationPreference?.enabled??true}
+async function toggleNotify(v){
+  if(v&&'Notification'in window&&Notification.permission==='default'){
+    const p=await Notification.requestPermission();if(p!=='granted')v=false;
+  }
+  try{await window.baemoonFirebase.setNotificationPreference(v);renderNotifications();toast(v?'앱 알림을 켰습니다.':'앱 알림을 껐습니다.')}catch(error){toast(firebaseFriendlyMessage(error))}
+}
+async function addNotification({title,body,type='event',audience='전체',personal=false}){
+  if(!title||!body)return;
+  const saved=personal
+    ?await window.baemoonFirebase.createPersonalNotification({title,body,type,audience})
+    :await window.baemoonFirebase.createBroadcastNotification({title,body,type,audience});
+
+  const cacheKey=personal?'personalNotifications':'notifications';
+  const current=window.firebaseCache?.[cacheKey]||[];
+  if(!current.some(item=>item.id===saved.id)){
+    window.firebaseCache[cacheKey]=[...current,saved];
+    renderNotifications();
+  }
+  return saved;
+}
+function renderNotifications(){
+  const ns=[...notifications()].sort((a,b)=>b.createdAt-a.createdAt),unread=ns.filter(n=>!n.read).length;
+  $('#notificationBadge').hidden=!unread;$('#notificationBadge').textContent=unread>99?'99+':unread;
+  $('#notificationList').innerHTML=ns.length?ns.map(n=>`<article class="notification-item ${n.read?'':'unread'}" data-notification="${n.id}"><div class="notification-symbol">${n.type==='notice'?'N':'!'}</div><div><h3>${esc(n.title)}</h3><p>${esc(n.body)}</p><div class="notification-item-meta">${esc(n.audience||'개인')} · ${new Date(n.createdAt).toLocaleString('ko-KR')}</div></div></article>`).join(''):'<div class="notification-empty">새로운 알림이 없습니다.</div>';
+  const permission='Notification'in window?Notification.permission:'unsupported';
+  $('#notificationToggle').checked=notifyEnabled();
+  $('#myNotificationStatus').textContent=!notifyEnabled()?'꺼짐':permission==='granted'?'켜짐':permission==='denied'?'차단됨':'허용 필요';
+  $('#notificationSettingDescription').textContent=!notifyEnabled()
+    ?'알림함에는 저장되지만 기기 알림은 울리지 않습니다.'
+    :permission==='granted'
+      ?'다른 기기에서 전송된 공지와 행사 알림을 받습니다.'
+      :permission==='denied'
+        ?'브라우저 또는 휴대폰 설정에서 알림 권한을 허용해주세요.'
+        :'알림함을 열거나 스위치를 누르면 기기 알림 권한을 요청합니다.';
+  $$('[data-notification]').forEach(c=>c.addEventListener('click',async()=>{await window.baemoonFirebase.markNotificationRead(c.dataset.notification);renderNotifications()}));
+}
+function closeNotificationManageMenu(){$('#notificationManageMenu').hidden=true;$('#notificationManageButton').setAttribute('aria-expanded','false')}
+$('#notificationButton').addEventListener('click',async()=>{
+  if(notifyEnabled()&&'Notification'in window&&Notification.permission==='default'){
+    try{await Notification.requestPermission()}catch{}
+  }
+  renderNotifications();
+  openOverlay('notificationCenter');
+});
+$('#myNotificationButton').addEventListener('click',()=>{renderNotifications();openOverlay('notificationCenter')});
+$('#notificationToggle').addEventListener('change',e=>toggleNotify(e.target.checked));
+$('#notificationManageButton').addEventListener('click',()=>{const menu=$('#notificationManageMenu');menu.hidden=!menu.hidden;$('#notificationManageButton').setAttribute('aria-expanded',String(!menu.hidden))});
+$('#markAllNotificationsRead').addEventListener('click',async()=>{await window.baemoonFirebase.markAllNotificationsRead(notifications().map(n=>n.id));renderNotifications();closeNotificationManageMenu();toast('모든 알림을 읽음 처리했습니다.')});
+$('#deleteReadNotifications').addEventListener('click',async()=>{const ids=notifications().filter(n=>n.read).map(n=>n.id);await window.baemoonFirebase.hideNotifications(ids);renderNotifications();closeNotificationManageMenu();toast(ids.length?'읽은 알림을 정리했습니다.':'정리할 읽은 알림이 없습니다.')});
+$('#requestClearNotifications').addEventListener('click',()=>{closeNotificationManageMenu();openOverlay('notificationClearConfirm')});
+$('#cancelClearNotifications').addEventListener('click',()=>closeOverlay('notificationClearConfirm'));
+$('#confirmClearNotifications').addEventListener('click',async()=>{await window.baemoonFirebase.hideNotifications(notifications().map(n=>n.id));renderNotifications();closeOverlay('notificationClearConfirm');toast('이 계정의 알림함을 비웠습니다.')});
+$('#subscribeEvents').addEventListener('click',()=>toggleNotify(true));
+function renderAdminToday(){
+  const entry=currentTodayEntry(),progress=Math.round(progressForEntry(entry)),fallback={badge:'TODAY',title:'주요 일정 없음',summary:'오늘 등록된 주요 일정이 없습니다.'},t=entry||fallback;
+  $('#adminTodayBadge').textContent=t.badge||'TODAY';$('#adminTodayTitle').textContent=t.title;$('#adminTodaySummary').textContent=t.summary;
+  $('#adminTodayProgress').textContent=`${progress}%`;$('#adminTodayTime').textContent=entry?`${formatDate(entry.date)} · ${entry.startTime}–${entry.endTime}`:'오늘은 설정된 주요 일정이 없습니다.';
+  const list=[...todaySchedules()].sort((a,b)=>a.date.localeCompare(b.date));
+  $('#dailyScheduleList').innerHTML=list.length?list.map(x=>{const d=new Date(`${x.date}T00:00:00`);return `<article class="daily-schedule-item"><div class="daily-date-box"><b>${d.getDate()}</b><span>${d.getMonth()+1}월</span></div><div><h3>${esc(x.title)}</h3><p>${esc(x.badge||'TODAY')} · ${esc(x.startTime)}–${esc(x.endTime)}</p></div><button data-edit-today="${x.id}">관리</button></article>`}).join(''):'<div class="admin-empty">미리 등록한 날짜별 일정이 없습니다. 일정이 없는 날에는 자동으로 ‘주요 일정 없음’이 표시됩니다.</div>';
+  $$('[data-edit-today]').forEach(b=>b.addEventListener('click',()=>openTodayEditor(b.dataset.editToday)));
+}
+function renderAdmin(){
+  const fs=festivals(),rs=reservations();
+  $('#adminReservationTotal').textContent=rs.reduce((sum,item)=>sum+Math.max(1,Number(item.groupSize||1)),0);$('#adminFestivalTotal').textContent=fs.filter(f=>f.visible).length;$('#adminNoticeCount').textContent=notices().length;
+  renderAdminToday();renderAdminMeals();renderAdminTimetable();
+  $('#adminFestivalList').innerHTML=fs.length?fs.map(f=>`<article class="admin-festival-card"><div><span class="notice-category">${f.visible?'공개':'숨김'}${f.featured?' · 대표':''}</span><h3>${esc(f.name)} ${esc(f.year)}</h3><p>${formatDate(f.start)||'날짜 미정'} · 부스 ${(f.booths||[]).length} · 식당 ${normalizeFoodVendors(f).length} · 음식 ${totalFoodItems(f)} · 일정 ${(f.events||[]).length}</p></div><div class="item-actions"><button data-manage-festival="${f.id}">운영 관리</button><button data-toggle-festival="${f.id}">${f.visible?'숨기기':'공개하기'}</button><button class="danger" data-delete-festival="${f.id}">삭제</button></div></article>`).join(''):'<div class="admin-empty">행사를 새로 만들어주세요.</div>';
+  $$('[data-manage-festival]').forEach(b=>b.addEventListener('click',()=>selectManagerFestival(b.dataset.manageFestival)));
+  $$('[data-toggle-festival]').forEach(b=>b.addEventListener('click',async()=>{try{await saveFestivals(festivals().map(f=>f.id===b.dataset.toggleFestival?{...f,visible:!f.visible}:f));renderAdmin();renderHome();toast('행사 공개 상태가 Firebase에 저장되었습니다.')}catch(error){toast(firebaseFriendlyMessage(error))}}));
+  $$('[data-delete-festival]').forEach(b=>b.addEventListener('click',async()=>{try{await saveFestivals(festivals().filter(f=>f.id!==b.dataset.deleteFestival));if(state.managerFestivalId===b.dataset.deleteFestival)state.managerFestivalId=null;renderAdmin();renderHome();toast('행사가 Firebase에서 삭제되었습니다.')}catch(error){toast(firebaseFriendlyMessage(error))}}));
+  renderAdminNotices();renderAdminCommunity();renderAdminStudents();renderGuestSettings();renderAdminReservations();if(state.managerFestivalId)selectManagerFestival(state.managerFestivalId,false);
+}
+function resetTodayEditor(){
+  state.editingTodayId=null;$('#todayEditorTitle').textContent='날짜별 일정 추가';$('#todayEditDate').value=localDateKey();
+  $('#todayEditStart').value='08:00';$('#todayEditEnd').value='17:00';$('#todayEditBadge').value='';$('#todayEditTitle').value='';$('#todayEditSummary').value='';$('#deleteTodayButton').hidden=true;
+}
+function openTodayEditor(entryId=null){
+  resetTodayEditor();
+  if(entryId){const t=todaySchedules().find(x=>x.id===entryId);if(!t)return;state.editingTodayId=entryId;$('#todayEditorTitle').textContent='날짜별 일정 수정';$('#todayEditDate').value=t.date;$('#todayEditStart').value=t.startTime;$('#todayEditEnd').value=t.endTime;$('#todayEditBadge').value=t.badge;$('#todayEditTitle').value=t.title;$('#todayEditSummary').value=t.summary;$('#deleteTodayButton').hidden=false}
+  openOverlay('todayEditor');
+}
+$('#editTodayButton').addEventListener('click',()=>openTodayEditor());
+$('#saveTodayButton').addEventListener('click',async()=>{
+  const p={date:$('#todayEditDate').value,startTime:$('#todayEditStart').value,endTime:$('#todayEditEnd').value,badge:$('#todayEditBadge').value.trim()||'TODAY',title:$('#todayEditTitle').value.trim(),summary:$('#todayEditSummary').value.trim()};
+  if(!p.date||!p.title||!p.summary)return toast('날짜, 제목과 설명을 입력해주세요.');
+  if(p.endTime<=p.startTime)return toast('종료 시간은 시작 시간보다 늦어야 합니다.');
+  let list=todaySchedules();
+  const duplicate=list.find(x=>x.date===p.date&&x.id!==state.editingTodayId);if(duplicate)return toast('해당 날짜에는 이미 일정이 등록되어 있습니다.');
+  list=state.editingTodayId?list.map(x=>x.id===state.editingTodayId?{...x,...p}:x):[...list,{id:id(),...p}];
+  try{await saveTodaySchedules(list);closeOverlay('todayEditor');renderHome();renderAdmin();toast('날짜별 일정이 Firebase에 저장되었습니다.')}catch(error){toast(firebaseFriendlyMessage(error))};
+});
+$('#deleteTodayButton').addEventListener('click',async()=>{if(!state.editingTodayId)return;try{await saveTodaySchedules(todaySchedules().filter(x=>x.id!==state.editingTodayId));closeOverlay('todayEditor');renderHome();renderAdmin();toast('날짜별 일정이 Firebase에서 삭제되었습니다.')}catch(error){toast(firebaseFriendlyMessage(error))}});
+function resetFestivalEditor(){state.editingFestivalId=null;$('#festivalEditorTitle').textContent='새 행사 만들기';['festivalEditName','festivalEditYear','festivalEditShort','festivalEditTagline','festivalEditDescription','festivalEditStart','festivalEditEnd'].forEach(x=>$('#'+x).value='');$('#festivalEditColor').value='#ff6038';$('#festivalEditVisible').checked=true;$('#festivalEditFeatured').checked=false}
+function openFestivalEditor(fid=null){resetFestivalEditor();if(fid){const f=festivals().find(x=>x.id===fid);state.editingFestivalId=fid;$('#festivalEditorTitle').textContent='행사 기본 정보 수정';$('#festivalEditName').value=f.name;$('#festivalEditYear').value=f.year;$('#festivalEditShort').value=f.short;$('#festivalEditTagline').value=f.tagline;$('#festivalEditDescription').value=f.description;$('#festivalEditStart').value=f.start;$('#festivalEditEnd').value=f.end;$('#festivalEditColor').value=f.color;$('#festivalEditVisible').checked=f.visible;$('#festivalEditFeatured').checked=f.featured}openOverlay('festivalEditor')}
+
+$('#addMealButton').addEventListener('click',()=>openMealEditor());
+$('#saveMealButton').addEventListener('click',async()=>{
+  const date=$('#mealEditDate').value;
+  const menus=$('#mealEditMenus').value.split(/[,\n]/).map(value=>value.trim()).filter(Boolean);
+  const payload={date,type:$('#mealEditType').value,time:$('#mealEditTime').value.trim(),menus,note:$('#mealEditNote').value.trim()};
+  if(!date)return toast('급식 날짜를 선택해주세요.');
+  if(!menus.length)return toast('메뉴를 한 개 이상 입력해주세요.');
+  let list=meals();
+  const duplicate=list.find(item=>item.date===date&&item.id!==state.editingMealId);
+  if(duplicate)return toast('해당 날짜에는 이미 급식이 등록되어 있습니다.');
+  if(state.editingMealId){
+    list=list.map(item=>item.id===state.editingMealId?{...item,...payload}:item);
+  }else{
+    list=[...list,{id:date,...payload}];
+  }
+  try{
+    await saveMeals(list);
+    closeOverlay('mealEditor');
+    renderMealCard();
+    renderAdminMeals();
+    toast('급식 정보가 Firebase에 저장되었습니다.');
+  }catch(error){toast(firebaseFriendlyMessage(error));}
+});
+$('#deleteMealButton').addEventListener('click',async()=>{
+  if(!state.editingMealId)return;
+  try{
+    await saveMeals(meals().filter(item=>item.id!==state.editingMealId));
+    closeOverlay('mealEditor');
+    renderMealCard();
+    renderAdminMeals();
+    toast('급식 정보가 Firebase에서 삭제되었습니다.');
+  }catch(error){toast(firebaseFriendlyMessage(error));}
+});
+
+$('#addFestivalButton').addEventListener('click',()=>openFestivalEditor());$('#editFestivalButton').addEventListener('click',()=>openFestivalEditor(state.managerFestivalId));$('#saveFestivalButton').addEventListener('click',async()=>{const p={name:$('#festivalEditName').value.trim(),year:+$('#festivalEditYear').value||new Date().getFullYear(),short:$('#festivalEditShort').value.trim(),tagline:$('#festivalEditTagline').value.trim(),description:$('#festivalEditDescription').value.trim(),start:$('#festivalEditStart').value,end:$('#festivalEditEnd').value,color:$('#festivalEditColor').value,visible:$('#festivalEditVisible').checked,featured:$('#festivalEditFeatured').checked};if(!p.name)return toast('행사 이름을 입력해주세요.');let fs=festivals();if(p.featured)fs=fs.map(f=>({...f,featured:false}));if(state.editingFestivalId)fs=fs.map(f=>f.id===state.editingFestivalId?{...f,...p}:f);else{const n={id:id(),...p,booths:[],menus:[],foodVendors:[],events:[]};fs.push(n);state.managerFestivalId=null}try{await saveFestivals(fs);closeOverlay('festivalEditor');renderAdmin();renderHome();toast('행사가 Firebase에 저장되었습니다.')}catch(error){toast(firebaseFriendlyMessage(error))}});
+function selectManagerFestival(fid,scroll=true){state.managerFestivalId=fid;const f=festivals().find(x=>x.id===fid);if(!f){$('#festivalManager').hidden=true;return}$('#festivalManager').hidden=false;$('#managerFestivalTitle').textContent=`${f.name} 운영 관리`;$('#managerFestivalMeta').textContent=`${f.year} · ${f.visible?'학생 공개':'학생 숨김'} · ${formatDate(f.start)}`;$('#managerFestivalStatus').textContent=f.featured?'대표 행사':'관리 중';renderManagerLists();if(scroll)$('#festivalManager').scrollIntoView({behavior:'smooth',block:'start'})}
+$$('#managerTabs button').forEach(b=>b.addEventListener('click',()=>{$$('#managerTabs button').forEach(x=>x.classList.toggle('active',x===b));$$('.manager-panel').forEach(p=>p.classList.toggle('active',p.dataset.managerPanel===b.dataset.managerTab))}));
+function managerFestival(){return festivals().find(f=>f.id===state.managerFestivalId)}
+async function updateManagerFestival(mutator){
+  const next=festivals().map(f=>f.id===state.managerFestivalId?mutator(f):f);
+  await saveFestivals(next);
+  renderAdmin();renderHome();
+  if(state.currentFestivalId===state.managerFestivalId)renderFestival();
+}
+function renderManagerLists(){
+  const festival=managerFestival();
+  if(!festival)return;
+  festival.booths=festival.booths||[];
+  festival.events=festival.events||[];
+  const vendors=normalizeFoodVendors(festival);
+
+  $('#adminBoothList').innerHTML=festival.booths.length
+    ?festival.booths.map(booth=>`<article class="manager-item"><div><span class="notice-category">${booth.times?.length?`${booth.times.length}개 시간`:'즉시 예약'}${booth.waitlistEnabled?' · 대기번호':''}</span><h3>${esc(booth.name)}</h3><p>${esc(booth.location)} · 정원 ${booth.capacity}명 · 최소 ${booth.minPeople||1}명 · ${booth.duration}분</p></div><div class="item-actions"><button data-edit-booth="${booth.id}">수정</button><button class="danger" data-delete-booth="${booth.id}">삭제</button></div></article>`).join('')
+    :'<div class="manager-empty">등록된 부스가 없습니다.</div>';
+
+  $('#adminMenuList').innerHTML=vendors.length
+    ?vendors.map(vendor=>`<article class="restaurant-manager-card">
+      <div class="restaurant-manager-head">
+        <div><span class="notice-category">${vendor.foods.length}개 음식</span><h3>${esc(vendor.name)}</h3><p>${esc(vendor.operator||'운영 주체 미등록')} · ${esc(vendor.location||'위치 미정')}</p></div>
+        <div class="item-actions"><button data-edit-restaurant="${vendor.id}">식당 수정</button><button data-add-food="${vendor.id}">음식 추가</button><button class="danger" data-delete-restaurant="${vendor.id}">삭제</button></div>
+      </div>
+      <div class="restaurant-food-admin-list">
+        ${vendor.foods.length
+          ?vendor.foods.map(food=>`<div class="restaurant-food-admin-item"><div><b>${esc(food.name)}</b><small>${Number(food.price||0).toLocaleString()}원 · ${esc(food.category||'메뉴')}</small></div><div class="item-actions"><button data-edit-food="${vendor.id}:${food.id}">수정</button><button class="danger" data-delete-food="${vendor.id}:${food.id}">삭제</button></div></div>`).join('')
+          :'<div class="manager-empty compact">아직 등록된 음식이 없습니다.</div>'}
+      </div>
+    </article>`).join('')
+    :'<div class="manager-empty">식당을 먼저 추가해주세요.</div>';
+
+  $('#adminEventList').innerHTML=festival.events.length
+    ?festival.events.map(event=>`<article class="manager-item"><div><span class="notice-category">${formatDate(event.date)} ${esc(event.time)}</span><h3>${esc(event.name)}</h3><p>${esc(event.location)} · ${esc(event.description)}</p></div><div class="item-actions"><button data-edit-event="${event.id}">수정</button><button class="danger" data-delete-event="${event.id}">삭제</button></div></article>`).join('')
+    :'<div class="manager-empty">등록된 일정이 없습니다.</div>';
+
+  $$('[data-edit-booth]').forEach(button=>button.addEventListener('click',()=>openBoothEditor(button.dataset.editBooth)));
+  $$('[data-delete-booth]').forEach(button=>button.addEventListener('click',async()=>{
+    try{
+      await updateManagerFestival(item=>({...item,booths:item.booths.filter(booth=>booth.id!==button.dataset.deleteBooth)}));
+      toast('부스를 삭제했습니다.');
+    }catch(error){toast(firebaseFriendlyMessage(error))}
+  }));
+
+  $$('[data-add-food]').forEach(button=>button.addEventListener('click',()=>openFoodItemEditor(button.dataset.addFood)));
+  $$('[data-edit-restaurant]').forEach(button=>button.addEventListener('click',()=>openRestaurantEditor(button.dataset.editRestaurant)));
+  $$('[data-delete-restaurant]').forEach(button=>button.addEventListener('click',async()=>{
+    if(!window.__bmAppConfirmV1130||!await window.__bmAppConfirmV1130('식당을 삭제할까요?','등록된 음식도 함께 삭제됩니다.','삭제'))return;
+    try{
+      await updateManagerFestival(item=>({...item,foodVendors:normalizeFoodVendors(item).filter(vendor=>vendor.id!==button.dataset.deleteRestaurant)}));
+      toast('식당을 삭제했습니다.');
+    }catch(error){toast(firebaseFriendlyMessage(error))}
+  }));
+
+  $$('[data-edit-food]').forEach(button=>button.addEventListener('click',()=>{
+    const [vendorId,foodId]=button.dataset.editFood.split(':');
+    openFoodItemEditor(vendorId,foodId);
+  }));
+  $$('[data-delete-food]').forEach(button=>button.addEventListener('click',async()=>{
+    const [vendorId,foodId]=button.dataset.deleteFood.split(':');
+    try{
+      await updateManagerFestival(item=>({...item,foodVendors:normalizeFoodVendors(item).map(vendor=>vendor.id===vendorId?{...vendor,foods:vendor.foods.filter(food=>food.id!==foodId)}:vendor)}));
+      toast('음식을 삭제했습니다.');
+    }catch(error){toast(firebaseFriendlyMessage(error))}
+  }));
+
+  $$('[data-edit-event]').forEach(button=>button.addEventListener('click',()=>openEventEditor(button.dataset.editEvent)));
+  $$('[data-delete-event]').forEach(button=>button.addEventListener('click',async()=>{
+    try{
+      await updateManagerFestival(item=>({...item,events:item.events.filter(event=>event.id!==button.dataset.deleteEvent)}));
+      toast('행사 일정을 삭제했습니다.');
+    }catch(error){toast(firebaseFriendlyMessage(error))}
+  }));
+}
+
+function previewImage(type,data){state.pendingImage[type]=data||'';const p=$(`#${type}ImagePreview`),i=$(`#${type}ImagePreviewImg`),src=imageSrc(data);if(src){i.src=src;p.hidden=false}else{p.hidden=true;i.removeAttribute('src')}}async function compressImage(file){
+  if(!file?.type.startsWith('image/'))throw Error('이미지 파일을 선택해주세요.');
+  const url=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file)});
+  const img=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=url});
+  let scale=Math.min(1,1280/img.width,960/img.height),quality=.82,result='';
+  for(let attempt=0;attempt<7;attempt++){
+    const c=document.createElement('canvas');c.width=Math.max(1,Math.round(img.width*scale));c.height=Math.max(1,Math.round(img.height*scale));
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);result=c.toDataURL('image/jpeg',quality);
+    if(result.length<=600000)return result;
+    quality=Math.max(.48,quality-.08);scale*=.88;
+  }
+  if(result.length>780000)throw Error('사진 용량을 충분히 줄이지 못했습니다. 더 작은 사진을 선택해주세요.');
+  return result;
+}
+['notice','booth','menu'].forEach(type=>{$(`#${type}Image`).addEventListener('change',async e=>{try{previewImage(type,await compressImage(e.target.files[0]));toast('사진을 추가했습니다.')}catch(err){toast(err.message)}});$(`#remove${type[0].toUpperCase()+type.slice(1)}Image`).addEventListener('click',()=>previewImage(type,''))});
+function renderBoothSlotDraft(){
+  state.boothSlotCapacitiesDraft=state.boothSlotCapacitiesDraft||{};
+  $('#boothSlotList').innerHTML=state.boothSlotsDraft.length
+    ?state.boothSlotsDraft.map((slot,index)=>`<article class="booth-slot-capacity-row">
+      <span>${esc(formatReservationSlot(slot))}</span>
+      <label>이 시간 정원<input type="number" min="1" step="1" value="${Math.max(1,Number(state.boothSlotCapacitiesDraft[slot]||$('#boothCapacity').value||1))}" data-booth-slot-capacity="${esc(slot)}"></label>
+      <button type="button" data-remove-booth-slot="${index}">삭제</button>
+    </article>`).join('')
+    :'<div class="manager-empty">예약 날짜와 시간을 추가해주세요. 시간이 없는 부스는 위의 기본 정원이 즉시 예약 정원으로 사용됩니다.</div>';
+  $$('[data-booth-slot-capacity]').forEach(input=>input.addEventListener('input',()=>{
+    const value=Math.max(1,Number(input.value||1));
+    input.value=String(value);
+    state.boothSlotCapacitiesDraft[input.dataset.boothSlotCapacity]=value;
+  }));
+  $$('[data-remove-booth-slot]').forEach(button=>button.addEventListener('click',()=>{
+    const index=Number(button.dataset.removeBoothSlot);
+    const slot=state.boothSlotsDraft[index];
+    state.boothSlotsDraft.splice(index,1);
+    if(slot)delete state.boothSlotCapacitiesDraft[slot];
+    renderBoothSlotDraft();
+  }));
+}
+function openBoothEditor(bid=null){
+  const festival=managerFestival();
+  state.editingBoothId=bid;
+  state.pendingImage.booth='';
+  state.boothSlotsDraft=[];
+  state.boothSlotCapacitiesDraft={};
+  $('#boothEditorTitle').textContent=bid?'체험 부스 수정':'체험 부스 추가';
+  ['boothName','boothOwner','boothLocation','boothDescription','boothImage'].forEach(id=>$('#'+id).value='');
+  $('#boothCapacity').value=5;
+  $('#boothMinPeople').value=1;
+  $('#boothMaxPeople').value=5;
+  $('#boothDuration').value=15;
+  $('#boothOpenStart').value='';
+  $('#boothOpenEnd').value='';
+  $('#boothBookingStatus').value='open';
+  $('#boothCongestion').value='auto';
+  $('#boothWaitlistEnabled').checked=false;
+  $('#boothSlotDate').value=festival?.start||localDateKey();
+  $('#boothSlotTime').value='13:00';
+  previewImage('booth','');
+  if(bid){
+    const booth=festival.booths.find(item=>item.id===bid);
+    $('#boothName').value=booth.name||'';
+    $('#boothOwner').value=booth.owner||'';
+    $('#boothLocation').value=booth.location||'';
+    $('#boothDescription').value=booth.description||'';
+    $('#boothCapacity').value=booth.capacity||5;
+    $('#boothMinPeople').value=booth.minPeople||1;
+    $('#boothMaxPeople').value=booth.maxPeople||booth.capacity||5;
+    $('#boothDuration').value=booth.duration||15;
+    $('#boothOpenStart').value=booth.openStart||'';
+    $('#boothOpenEnd').value=booth.openEnd||'';
+    $('#boothBookingStatus').value=booth.bookingClosed?'closed':'open';
+    $('#boothCongestion').value=booth.congestion||'auto';
+    $('#boothWaitlistEnabled').checked=Boolean(booth.waitlistEnabled);
+    state.boothSlotsDraft=normalizedBoothTimes(booth,festival);
+    state.boothSlotCapacitiesDraft=Object.fromEntries(state.boothSlotsDraft.map(slot=>[slot,Math.max(1,Number(booth.slotCapacities?.[slot]||booth.capacity||1))]));
+    previewImage('booth',booth.image);
+  }
+  renderBoothSlotDraft();
+  openOverlay('boothEditor');
+}
+$('#addBoothSlot').addEventListener('click',()=>{
+  const date=$('#boothSlotDate').value;
+  const time=$('#boothSlotTime').value;
+  if(!date||!time)return toast('예약 날짜와 시간을 모두 선택해주세요.');
+  const slot=`${date}T${time}`;
+  if(state.boothSlotsDraft.includes(slot))return toast('이미 추가한 예약 시간입니다.');
+  state.boothSlotsDraft.push(slot);
+  state.boothSlotCapacitiesDraft=state.boothSlotCapacitiesDraft||{};
+  state.boothSlotCapacitiesDraft[slot]=Math.max(1,Number($('#boothCapacity').value||1));
+  state.boothSlotsDraft.sort();
+  renderBoothSlotDraft();
+});
+$('#addBoothButton').addEventListener('click',()=>openBoothEditor());
+
+
+function openRestaurantEditor(restaurantId=null){
+  const festival=managerFestival();
+  state.editingRestaurantId=restaurantId;
+  $('#restaurantEditorTitle').textContent=restaurantId?'식당 수정':'식당 추가';
+  $('#restaurantName').value='';
+  $('#restaurantOperator').value='';
+  $('#restaurantLocation').value='';
+
+  if(restaurantId){
+    const vendor=normalizeFoodVendors(festival).find(item=>item.id===restaurantId);
+    if(!vendor)return;
+    $('#restaurantName').value=vendor.name||'';
+    $('#restaurantOperator').value=vendor.operator||'';
+    $('#restaurantLocation').value=vendor.location||'';
+  }
+  openOverlay('restaurantEditor');
+  setTimeout(()=>$('#restaurantName').focus(),160);
+}
+$('#addRestaurantButton').addEventListener('click',()=>openRestaurantEditor());
+$('#saveRestaurantButton').addEventListener('click',async()=>{
+  const payload={
+    name:$('#restaurantName').value.trim(),
+    operator:$('#restaurantOperator').value.trim(),
+    location:$('#restaurantLocation').value.trim()
+  };
+  if(!payload.name)return toast('식당 이름을 입력해주세요.');
+  if(!payload.location)return toast('판매 위치를 입력해주세요.');
+
+  try{
+    await updateManagerFestival(festival=>{
+      const vendors=normalizeFoodVendors(festival);
+      const foodVendors=state.editingRestaurantId
+        ?vendors.map(vendor=>vendor.id===state.editingRestaurantId?{...vendor,...payload}:vendor)
+        :[...vendors,{id:id(),...payload,foods:[]}];
+      return {...festival,foodVendors};
+    });
+    closeOverlay('restaurantEditor');
+    toast('식당이 Firebase에 저장되었습니다.');
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+});
+
+function openFoodItemEditor(restaurantId,foodId=null){
+  const festival=managerFestival();
+  const vendor=normalizeFoodVendors(festival).find(item=>item.id===restaurantId);
+  if(!vendor)return toast('식당 정보를 찾지 못했습니다.');
+
+  state.foodRestaurantId=restaurantId;
+  state.editingFoodItemId=foodId;
+  state.pendingImage.menu='';
+  $('#foodItemEditorTitle').textContent=foodId?'음식 수정':'음식 추가';
+  $('#foodItemRestaurantName').textContent=`${vendor.name} · ${vendor.location||'위치 미정'}`;
+  $('#foodItemName').value='';
+  $('#foodItemPrice').value='';
+  $('#foodItemCategory').value='식사';
+  $('#foodItemDescription').value='';
+  $('#menuImage').value='';
+  previewImage('menu','');
+
+  if(foodId){
+    const food=vendor.foods.find(item=>item.id===foodId);
+    if(!food)return;
+    $('#foodItemName').value=food.name||'';
+    $('#foodItemPrice').value=food.price||0;
+    $('#foodItemCategory').value=food.category||'식사';
+    $('#foodItemDescription').value=food.description||'';
+    previewImage('menu',food.image||'');
+  }
+
+  openOverlay('foodItemEditor');
+  setTimeout(()=>$('#foodItemName').focus(),160);
+}
+$('#saveFoodItemButton').addEventListener('click',async()=>{
+  const payload={
+    name:$('#foodItemName').value.trim(),
+    price:Number($('#foodItemPrice').value||0),
+    category:$('#foodItemCategory').value,
+    description:$('#foodItemDescription').value.trim(),
+    image:state.pendingImage.menu
+  };
+  if(!payload.name)return toast('음식 이름을 입력해주세요.');
+
+  try{
+    await updateManagerFestival(festival=>{
+      const foodVendors=normalizeFoodVendors(festival).map(vendor=>{
+        if(vendor.id!==state.foodRestaurantId)return vendor;
+        const foods=state.editingFoodItemId
+          ?vendor.foods.map(food=>food.id===state.editingFoodItemId?{...food,...payload}:food)
+          :[...vendor.foods,{id:id(),...payload}];
+        return {...vendor,foods};
+      });
+      return {...festival,foodVendors};
+    });
+    closeOverlay('foodItemEditor');
+    toast('음식이 Firebase에 저장되었습니다.');
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+});
+
+function openEventEditor(eid=null){const f=managerFestival();state.editingEventId=eid;['eventName','eventDate','eventTime','eventLocation','eventDescription'].forEach(x=>$('#'+x).value='');$('#eventEditorTitle').textContent=eid?'행사 일정 수정':'행사 일정 추가';if(eid){const e=f.events.find(x=>x.id===eid);$('#eventName').value=e.name;$('#eventDate').value=e.date;$('#eventTime').value=e.time;$('#eventLocation').value=e.location;$('#eventDescription').value=e.description}openOverlay('eventEditor')}
+$('#addEventButton').addEventListener('click',()=>openEventEditor());$('#saveEventButton').addEventListener('click',async()=>{const p={name:$('#eventName').value.trim(),date:$('#eventDate').value,time:$('#eventTime').value,location:$('#eventLocation').value.trim(),description:$('#eventDescription').value.trim()};if(!p.name)return toast('행사 이름을 입력해주세요.');try{await updateManagerFestival(f=>({...f,events:state.editingEventId?f.events.map(e=>e.id===state.editingEventId?{...e,...p}:e):[...f.events,{id:id(),...p}]}));closeOverlay('eventEditor');toast('행사 일정이 Firebase에 저장되었습니다.')}catch(error){toast(firebaseFriendlyMessage(error))}});
+function renderAdminNotices(){const ns=notices();$('#adminNoticeList').innerHTML=ns.length?ns.map(n=>`<article class="admin-notice-card"><div><span class="notice-category">${esc(n.category)} · ${esc(n.audience)}</span><h3>${esc(n.title)}</h3><p>${esc(n.summary)}</p></div><div class="item-actions"><button data-view-notice="${n.id}">상세</button><button data-edit-notice="${n.id}">수정</button><button class="danger" data-delete-notice="${n.id}">삭제</button></div></article>`).join(''):'<div class="admin-empty">공지 없음</div>';$$('[data-view-notice]').forEach(b=>b.addEventListener('click',()=>openNoticeDetail(b.dataset.viewNotice)));$$('[data-edit-notice]').forEach(b=>b.addEventListener('click',()=>openNoticeEditor(b.dataset.editNotice)));$$('[data-delete-notice]').forEach(b=>b.addEventListener('click',async()=>{try{await saveNotices(notices().filter(n=>n.id!==b.dataset.deleteNotice));renderAdmin();renderHome();toast('공지가 Firebase에서 삭제되었습니다.')}catch(error){toast(firebaseFriendlyMessage(error))}}))}
+function openReservationMessage(reservationId){
+  const reservation=reservationById(reservationId);
+  if(!reservation)return toast('예약 정보를 찾지 못했습니다.');
+  state.messageReservationId=reservationId;
+  const info=resolvedReservationInfo(reservation);
+  $('#reservationMessageTarget').textContent=`${info.user} · ${info.boothName} · ${info.time} · ${info.groupSize}명`;
+  $('#reservationMessageTitle').value='예약 안내';
+  $('#reservationMessageBody').value='';
+  $('#reservationMessageError').hidden=true;
+  openOverlay('reservationMessageModal');
+  setTimeout(()=>$('#reservationMessageBody').focus(),180);
+}
+function adminBoothEntries(){
+  return festivals().filter(festival=>!festivalExpired(festival)).flatMap(festival=>(festival.booths||[]).filter(booth=>!boothExpired(festival,booth)).map(booth=>({
+    festival,
+    booth,
+    key:`${festival.id}:${booth.id}`
+  })));
+}
+function boothReservations(festivalId,boothId){
+  return reservations()
+    .filter(item=>item.festivalId===festivalId&&item.boothId===boothId)
+    .sort((a,b)=>String(a.time||'').localeCompare(String(b.time||''))||Number(a.createdAt)-Number(b.createdAt));
+}
+function boothSlotSummary(festival,booth,items){
+  const times=booth.times?.length?booth.times:['즉시 예약'];
+  return times.map(time=>{
+    const matching=items.filter(item=>String(item.time||'즉시 예약')===String(time));
+    const people=matching.reduce((sum,item)=>sum+Math.max(1,Number(item.groupSize||1)),0);
+    return {time,people,count:matching.length,capacity:boothCapacityForTime(booth,time)};
+  });
+}
+function openAdminBoothReservations(key){
+  const entry=adminBoothEntries().find(item=>item.key===key);
+  if(!entry)return toast('부스 정보를 찾지 못했습니다.');
+  state.adminReservationBoothKey=key;
+
+  const items=boothReservations(entry.festival.id,entry.booth.id);
+  const totalPeople=items.reduce((sum,item)=>sum+Math.max(1,Number(item.groupSize||1)),0);
+  const slots=boothSlotSummary(entry.festival,entry.booth,items);
+
+  $('#adminBoothReservationTitle').textContent=`${entry.booth.name} 예약자 명단`;
+  $('#adminBoothReservationSummary').textContent=
+    `${entry.festival.name} · ${entry.booth.location||'장소 미정'} · 예약 ${items.length}건 · 누적 ${totalPeople}명`;
+
+  $('#adminBoothSlotSummary').innerHTML=slots.map(slot=>`
+    <article class="${slot.people>=slot.capacity?'slot-full':''}">
+      <span>${esc(formatReservationSlot(slot.time))}</span>
+      <b>${slot.people}/${slot.capacity}명</b>
+      <small>${slot.count}건</small>
+    </article>
+  `).join('');
+
+  $('#adminBoothReservationList').innerHTML=items.length
+    ?items.map(item=>{
+      const info=resolvedReservationInfo(item);
+      return `<article class="admin-booth-person-card">
+        <div><b>${esc(info.user)}</b><small>${esc(info.time)} · ${info.groupSize}명 · ${new Date(info.createdAt).toLocaleString('ko-KR')}</small></div>
+        <div class="reservation-admin-actions">
+          <button data-admin-reservation-detail="${item.id}">상세</button>
+          <button data-message-reservation="${item.id}">메시지</button>
+        </div>
+      </article>`;
+    }).join('')
+    :'<div class="admin-empty">이 부스에는 아직 예약자가 없습니다.</div>';
+
+  $$('#adminBoothReservationList [data-admin-reservation-detail]').forEach(button=>
+    button.addEventListener('click',()=>openReservationDetail(button.dataset.adminReservationDetail))
+  );
+  $$('#adminBoothReservationList [data-message-reservation]').forEach(button=>
+    button.addEventListener('click',()=>openReservationMessage(button.dataset.messageReservation))
+  );
+  openOverlay('adminBoothReservationModal');
+}
+function renderAdminReservations(){
+  const entries=adminBoothEntries();
+  const totalPeople=reservations().reduce((sum,item)=>sum+Math.max(1,Number(item.groupSize||1)),0);
+  $('#adminReservationTotal').textContent=totalPeople;
+
+  $('#adminReservationList').innerHTML=entries.length
+    ?entries.map(entry=>{
+      const items=boothReservations(entry.festival.id,entry.booth.id);
+      const people=items.reduce((sum,item)=>sum+Math.max(1,Number(item.groupSize||1)),0);
+      const slots=boothSlotSummary(entry.festival,entry.booth,items);
+      return `<button class="admin-booth-reservation-card" data-admin-booth-reservations="${entry.key}">
+        <div class="admin-booth-reservation-main">
+          <span>${esc(entry.festival.name)}</span>
+          <h3>${esc(entry.booth.name)}</h3>
+          <p>${esc(entry.booth.location||'장소 미정')} · 예약 ${items.length}건</p>
+        </div>
+        <div class="admin-booth-reservation-total">
+          <span>누적 예약 인원</span><b>${people}명</b>
+        </div>
+        <div class="admin-booth-slot-preview">
+          ${slots.map(slot=>`<i class="${slot.people>=slot.capacity?'slot-full':''}">${esc(formatReservationSlot(slot.time))} ${slot.people}/${slot.capacity}</i>`).join('')}
+        </div>
+        <strong>예약자 명단 보기 →</strong>
+      </button>`;
+    }).join('')
+    :'<div class="admin-empty">등록된 체험 부스가 없습니다.</div>';
+
+  $$('[data-admin-booth-reservations]').forEach(button=>
+    button.addEventListener('click',()=>openAdminBoothReservations(button.dataset.adminBoothReservations))
+  );
+}
+
+$('#sendReservationMessage').addEventListener('click',async()=>{
+  const reservationId=state.messageReservationId;
+  const title=$('#reservationMessageTitle').value.trim();
+  const body=$('#reservationMessageBody').value.trim();
+  const errorBox=$('#reservationMessageError');
+  errorBox.hidden=true;
+  if(!reservationId||!title||!body){
+    errorBox.textContent='제목과 내용을 모두 입력해주세요.';
+    errorBox.hidden=false;
+    return;
+  }
+
+  const button=$('#sendReservationMessage');
+  button.disabled=true;
+  button.textContent='전송 중…';
+  try{
+    await window.baemoonFirebase.sendReservationMessage(reservationId,{title,body});
+    closeOverlay('reservationMessageModal');
+    state.messageReservationId=null;
+    toast('예약자에게 개인 메시지를 보냈습니다.');
+  }catch(error){
+    errorBox.textContent=firebaseFriendlyMessage(error);
+    errorBox.hidden=false;
+  }finally{
+    button.disabled=false;
+    button.textContent='개인 메시지 보내기';
+  }
+});
+$('#refreshServerReservations').addEventListener('click',async()=>{const b=$('#refreshServerReservations');b.disabled=true;try{await window.baemoonFirebase.getAdminStats();toast('서버 예약 명단을 새로고침했습니다.')}catch(error){toast(firebaseFriendlyMessage(error))}finally{b.disabled=false}});$('#downloadAdminCsv').addEventListener('click',()=>{const rs=reservations(),safe=v=>`"${String(v??'').replaceAll('"','""')}"`,csv=['행사,부스,예약자,시간,예약인원,등록시각',...rs.map(r=>[r.festivalName,r.boothName,r.user,r.time,Number(r.groupSize||1),new Date(r.createdAt).toLocaleString('ko-KR')].map(safe).join(','))].join('\n'),blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='baemoon-reservations.csv';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)});
+$('#eventControlButton').addEventListener('click',()=>openOverlay('alertComposer'));$('#sendAlertButton').addEventListener('click',async()=>{const title=$('#alertTitle').value.trim(),body=$('#alertBody').value.trim();if(!title||!body)return toast('제목과 내용을 입력해주세요.');try{await addNotification({title,body,audience:$('#alertAudience').value,type:'event'});closeOverlay('alertComposer');$('#alertTitle').value='';$('#alertBody').value='';toast('Firebase 알림을 전송했습니다.')}catch(error){toast(firebaseFriendlyMessage(error))}});
+$('#previewStudentHome').addEventListener('click',()=>route('home',{preview:true}));$('#adminLogout').addEventListener('click',logoutToWelcome);
+$('#findRoute').addEventListener('click',()=>{$('#routeResult').innerHTML=`<span class="route-number">1</span><div><b>${esc($('#routeStart').value)} → ${esc($('#routeEnd').value)}</b><small>추천 경로를 지도에 표시했습니다.</small></div>`;toast('경로를 찾았습니다.')});$$('#floorTabs button').forEach(b=>b.addEventListener('click',()=>{$$('#floorTabs button').forEach(x=>x.classList.toggle('active',x===b));$('#floorTitle').textContent=`${b.dataset.floor}층 안내도`}));
+function bindZoomables(){$$('.zoomable-image').forEach(el=>{el.onclick=()=>{const src=el.tagName==='IMG'?el.src:el.dataset.image;if(!src)return;$('#lightboxImage').src=src;openOverlay('imageLightbox')}})}
+
+
+function jumpToAdminSection(targetId){
+  const target=document.getElementById(targetId);
+  if(!target)return;
+  target.scrollIntoView({behavior:'smooth',block:'start'});
+  target.classList.remove('admin-jump-highlight');
+  requestAnimationFrame(()=>target.classList.add('admin-jump-highlight'));
+  setTimeout(()=>target.classList.remove('admin-jump-highlight'),1300);
+}
+$$('[data-admin-jump]').forEach(item=>{
+  const run=()=>jumpToAdminSection(item.dataset.adminJump);
+  item.addEventListener('click',run);
+  item.addEventListener('keydown',event=>{
+    if(event.key==='Enter'||event.key===' '){
+      event.preventDefault();
+      run();
+    }
+  });
+});
+
+$('#checkFirebaseConnection').addEventListener('click',async()=>{
+  setFirebaseStatus('checking','Firebase 전체 연결 확인 중','앱의 모든 Firestore 컬렉션을 확인하고 있습니다.');
+  try{
+    const result=await window.baemoonFirebase.checkConnection();
+    setFirebaseStatus('connected','Firebase 전체 연결됨',`게시글 ${result.posts} · 행사 ${result.festivals} · 급식 ${result.meals} · 예약 ${result.reservations} · 알림 ${result.notifications} · 사진 ${result.media}`);$$('[data-sync-item]').forEach(el=>el.className='');
+    toast('Firebase 연결이 정상입니다.');
+  }catch(error){
+    setFirebaseStatus('error','Firebase 연결 실패',firebaseFriendlyMessage(error));
+    toast(firebaseFriendlyMessage(error));
+  }
+});
+
+
+$('#adminSaveAll').addEventListener('click',async()=>{
+  const button=$('#adminSaveAll');
+  button.classList.add('saving');
+  button.textContent='저장 중…';
+  setFirebaseStatus('saving','관리자 전체 저장 중','공지·일정·행사·급식·게스트 설정과 사진을 서버에 저장합니다.');
+  try{
+    const result=await window.baemoonFirebase.saveAllAdminData({
+      festivals:festivals(),
+      meals:meals(),
+      notices:notices(),
+      dailySchedules:todaySchedules(),
+      guestAccess:guestAccess()
+    });
+    if(result.data){window.firebaseCache.festivals=result.data.festivals;window.firebaseCache.meals=result.data.meals;window.firebaseCache.notices=result.data.notices;window.firebaseCache.dailySchedules=result.data.dailySchedules;window.firebaseCache.guestAccess=result.data.guestAccess}markAdminSaved(`전체 저장 완료 · 행사 ${result.festivals}개 · 공지 ${result.notices}개 · 급식 ${result.meals}개 · 사진 ${result.media}개`);
+    setFirebaseStatus('connected','Firebase 연결됨','관리자 변경사항이 모두 서버에 저장되었습니다.');
+    toast('관리자 변경사항을 모두 저장했습니다.');
+  }catch(error){
+    const message=firebaseFriendlyMessage(error);
+    markAdminSaveError(message);
+    setFirebaseStatus('error','관리자 전체 저장 실패',message);
+    toast(message);
+  }finally{
+    button.classList.remove('saving');
+    button.textContent='전체 저장';
+  }
+});
+$('#refreshAdminCommunity').addEventListener('click',async()=>{
+  const button=$('#refreshAdminCommunity');
+  button.disabled=true;
+  button.textContent='불러오는 중…';
+  try{
+    const count=await window.baemoonFirebase.refreshAdminCommunity();
+    renderAdminCommunity();
+    toast(`Firebase에서 게시글 ${count}개를 불러왔습니다.`);
+  }catch(error){
+    toast(firebaseFriendlyMessage(error));
+  }finally{
+    button.disabled=false;
+    button.textContent='새로고침';
+  }
+});
+
+
+$('#openAccountGuide')?.addEventListener('click',()=>openOverlay('accountGuideModal'));
+$('#refreshAdminStudents').addEventListener('click',async()=>{
+  const button=$('#refreshAdminStudents');
+  button.disabled=true;
+  button.textContent='불러오는 중…';
+  try{
+    const count=await window.baemoonFirebase.refreshAdminStudents();
+    renderAdminStudents();
+    toast(`학생 문서 ${count}개를 Firebase에서 불러왔습니다.`);
+  }catch(error){
+    toast(firebaseFriendlyMessage(error));
+  }finally{
+    button.disabled=false;
+    button.textContent='새로고침';
+  }
+});
+
+
+/* v11.18 launch preparation */
+function formatReservationSlot(value){
+  const raw=String(value||'즉시 예약');
+  if(raw==='즉시 예약')return raw;
+  const matched=raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$/);
+  if(!matched)return raw;
+  const date=new Date(`${matched[1]}T00:00:00`);
+  const dateText=new Intl.DateTimeFormat('ko-KR',{month:'long',day:'numeric',weekday:'short'}).format(date);
+  return `${dateText} ${matched[2]}`;
+}
+function normalizedBoothTimes(booth,festival){
+  const raw=Array.isArray(booth?.times)?booth.times:[];
+  const fallbackDate=festival?.start||localDateKey();
+  return raw.map(value=>{
+    const text=String(value||'').trim();
+    if(!text)return null;
+    if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(text))return text;
+    if(/^\d{2}:\d{2}$/.test(text))return `${fallbackDate}T${text}`;
+    return text;
+  }).filter(Boolean);
+}
+function route(screen,opts={}){
+  if(!session()){showAuthGate();return}
+  
+  const access=guestAccess();
+  if(isGuest()&&['guide','timetable','community','classchat'].includes(screen)){
+    toast('학교 내부 메뉴는 학생만 이용할 수 있습니다.');
+    screen='home';
+  }
+  if(isGuest()&&['festivals','festival'].includes(screen)&&!access.festivals){
+    toast('현재 게스트에게 행사가 공개되지 않았습니다.');
+    screen='home';
+  }
+  state.screen=screen;
+  $$('.screen').forEach(item=>item.classList.toggle('active',item.dataset.screen===screen));
+  $$('#bottomNav [data-go]').forEach(button=>{
+    const target=screen==='festival'?'festivals':screen;
+    button.classList.toggle('active',button.dataset.go===target);
+  });
+  $('#appShell').classList.toggle('admin-mode',screen==='admin'&&isAdmin());
+  if(screen==='admin')renderAdmin();
+  if(screen==='festivals')renderFestivalHub();
+  if(screen==='festival')renderFestival();
+  if(screen==='timetable')renderTimetable();
+  if(screen==='community')renderCommunity();
+  if(screen==='classchat')renderClassChat();
+  if(screen==='my')renderMy();
+  applyRoleVisibility();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function applyRoleVisibility(){
+  const guest=isGuest();
+  const access=guestAccess();
+  const todayHeading=$('#todayHomeHeading');
+  const todayCard=$('#todayCard');
+  const mealSection=$('#mealHomeSection');
+  const festivalSection=$('#festivalHomeSection');
+  const noticeSection=$('#schoolNoticeSection');
+  if(todayHeading)todayHeading.hidden=guest;
+  if(todayCard)todayCard.hidden=guest;
+  if(mealSection)mealSection.hidden=guest&&!access.meals;
+  if(festivalSection)festivalSection.hidden=guest&&!access.festivals;
+  if(noticeSection)noticeSection.hidden=guest;
+  $$('[data-guest-nav="guide"],[data-guest-nav="timetable"],[data-guest-nav="community"]').forEach(button=>{
+    button.hidden=guest;
+  });
+  $$('[data-guest-nav="festivals"]').forEach(button=>{
+    button.hidden=guest&&!access.festivals;
+  });
+  const navButtons=$$('#bottomNav [data-go]').filter(button=>!button.hidden&&getComputedStyle(button).display!=='none');
+  if($('#bottomNav'))$('#bottomNav').style.gridTemplateColumns=`repeat(${Math.max(1,navButtons.length)},1fr)`;
+  if(guest&&['guide','timetable','community','classchat'].includes(state.screen)){
+    route('home');
+  }
+}
+function renderHome(){
+  const access=guestAccess();
+  renderTodayCard();
+  renderMealCard();
+  const visible=(isGuest()&&!access.festivals)?[]:festivals().filter(f=>f.visible);
+  $('#festivalHomeCount').textContent=`${visible.length}개`;
+  $('#festivalHomeList').innerHTML=visible.length
+    ?`<button class="festival-entry-card" id="openFestivalHubFromHome">
+        <div><span class="card-tag">FESTIVAL</span><h3>행사 화면 열기</h3>
+        <p>${visible.slice(0,3).map(item=>esc(item.name)).join(' · ')}${visible.length>3?' 외':''}</p></div>
+        <strong>${visible.length}개 행사 →</strong>
+      </button>`
+    :'<div class="festival-empty">관리자가 공개한 행사가 없습니다.</div>';
+  $('#openFestivalHubFromHome')?.addEventListener('click',()=>route('festivals'));
+  renderHomeReservations();
+  renderNotices();
+  updateFestivalNav();
+  applyRoleVisibility();
+}
+function updateFestivalNav(){
+  const button=$('#festivalNavButton');
+  const hasFestival=activeFestivalView().some(item=>item.visible);
+  if(!button)return;
+  if(!hasFestival){
+    button.style.setProperty('display','none','important');
+  }else{
+    button.style.removeProperty('display');
+    $('#festivalNavLabel').textContent='행사';
+    $('#festivalNavIcon').textContent='축';
+    button.onclick=()=>route('festivals');
+  }
+}
+function renderFestivalHub(){
+  const access=guestAccess();
+  const visible=(isGuest()&&!access.festivals)?[]:activeFestivalView().filter(item=>item.visible);
+  $('#festivalHubCount').textContent=`${visible.length}개`;
+  $('#festivalHubList').innerHTML=visible.length
+    ?visible.map(festival=>`<button class="festival-hub-card" data-select-festival="${festival.id}" style="--festival-color:${festival.color||'#ff6038'}">
+      <div class="festival-hub-card-cover">
+        <span>${dday(festival.start)||'FESTIVAL'}</span>
+        <b>${esc(String(festival.year||''))}</b>
+      </div>
+      <div class="festival-hub-card-copy">
+        <small>${esc((festival.short||'BAEMOON').toUpperCase())}</small>
+        <h2>${esc(festival.name)}</h2>
+        <p>${esc(festival.tagline||festival.description||'행사 상세 정보를 확인하세요.')}</p>
+        <strong>행사 들어가기 →</strong>
+      </div>
+    </button>`).join('')
+    :'<div class="festival-empty">현재 등록된 행사가 없습니다.</div>';
+  $$('[data-select-festival]').forEach(button=>button.addEventListener('click',()=>{
+    state.currentFestivalId=button.dataset.selectFestival;
+    route('festival');
+  }));
+}
+function renderMenus(festival){
+  const vendors=normalizeFoodVendors(festival);
+  $('#foodList').innerHTML=vendors.length
+    ?vendors.map(vendor=>`<button class="food-vendor-card horizontal" data-open-restaurant="${vendor.id}">
+      <header>
+        <div><span class="card-tag">FOOD STORE</span><h3>${esc(vendor.name)}</h3></div>
+        <p>${esc(vendor.operator||'운영 주체 미등록')} · ${esc(vendor.location||'위치 미정')}</p>
+      </header>
+      <div class="food-preview-row">
+        ${vendor.foods.length?vendor.foods.slice(0,5).map(food=>`
+          <div class="food-preview-item">
+            <div class="food-preview-image" style="${imageSrc(food.image)?`background-image:url('${imageSrc(food.image)}')`:''}">
+              ${food.image?'':esc((food.name||'?').slice(0,1))}
+            </div>
+            <span>${esc(food.name)}</span>
+          </div>`).join(''):'<div class="festival-empty compact">등록된 음식이 없습니다.</div>'}
+      </div>
+      <strong class="food-detail-link">전체 메뉴 보기 →</strong>
+    </button>`).join('')
+    :'<div class="festival-empty">등록된 식당이 없습니다.</div>';
+  $$('[data-open-restaurant]').forEach(button=>button.addEventListener('click',()=>openRestaurantMenu(button.dataset.openRestaurant)));
+}
+function openRestaurantMenu(vendorId){
+  const festival=selectedFestival();
+  const vendor=normalizeFoodVendors(festival).find(item=>item.id===vendorId);
+  if(!vendor)return toast('음식점 정보를 찾지 못했습니다.');
+  $('#restaurantMenuTitle').textContent=vendor.name;
+  $('#restaurantMenuMeta').textContent=`${vendor.operator||'운영 주체 미등록'} · ${vendor.location||'위치 미정'}`;
+  $('#restaurantMenuDetailList').innerHTML=vendor.foods.length?vendor.foods.map(food=>`
+    <article class="restaurant-menu-detail">
+      <div class="restaurant-menu-photo ${food.image?'zoomable-image':''}" data-image="${imageSrc(food.image)}"
+        style="${imageSrc(food.image)?`background-image:url('${imageSrc(food.image)}')`:''}">
+        ${food.image?'':esc((food.name||'?').slice(0,1))}
+      </div>
+      <div><span>${esc(food.category||'메뉴')}</span><h3>${esc(food.name)}</h3>
+      <p>${esc(food.description||'')}</p><b>${Number(food.price||0).toLocaleString()}원</b></div>
+    </article>`).join(''):'<div class="festival-empty">등록된 음식이 없습니다.</div>';
+  openOverlay('restaurantMenuModal');
+  bindZoomables();
+}
+function openReservation(boothId){
+  const current=session();
+  if(!['student','guest'].includes(current?.role))return toast('학생 또는 게스트로 로그인한 뒤 예약할 수 있습니다.');
+  if(current.role==='guest'&&!guestAccess().festivals)return toast('현재 게스트 예약이 공개되지 않았습니다.');
+  const festival=selectedFestival();
+  const booth=festival?.booths?.find(item=>item.id===boothId);
+  if(!booth)return;
+  state.reservationBoothId=boothId;
+  const times=normalizedBoothTimes(booth,festival);
+  const slots=times.length?times:['즉시 예약'];
+  $('#reservationModalTitle').textContent=booth.name;
+  $('#reservationModeText').textContent=times.length
+    ?'날짜와 시간별 현재 예약 인원을 확인하고 원하는 회차를 선택하세요.'
+    :'예약 인원을 선택한 뒤 바로 예약합니다.';
+  $('#reservationTimeGrid').innerHTML=slots.map((time,index)=>{
+    const availability=slotAvailability(festival,booth,time);
+    const unavailable=availability.maxForCurrentUser<availability.minPeople;
+    const label=formatReservationSlot(time);
+    const parts=label.split(' ');
+    const clock=parts.pop();
+    return `<button class="${index===0?'selected':''} ${unavailable?'slot-full':''}"
+      data-time="${esc(time)}" ${unavailable?'disabled':''}>
+      <b>${esc(parts.join(' ')||label)}</b><em>${esc(clock||'')}</em>
+      <small>${availability.reserved}/${availability.capacity}명</small>
+    </button>`;
+  }).join('');
+  const firstAvailable=$$('#reservationTimeGrid button').find(button=>!button.disabled);
+  $$('#reservationTimeGrid button').forEach(button=>button.classList.remove('selected'));
+  if(firstAvailable)firstAvailable.classList.add('selected');
+  $$('#reservationTimeGrid button').forEach(button=>button.addEventListener('click',async()=>{
+    $$('#reservationTimeGrid button').forEach(item=>item.classList.remove('selected'));
+    button.classList.add('selected');
+    updateReservationPartyAvailability(festival,booth,button.dataset.time);
+    await refreshVisibleSlotStatus(festival,booth,button.dataset.time);
+  }));
+  $('#reservationUserLabel').firstChild.textContent=current.role==='student'?'학생 예약자':'게스트 예약자';
+  $('#reservationUser').value=current.role==='student'
+    ?`${studentDisplayId(current)} ${current.name}`
+    :`${current.school} · ${current.name}`;
+  updateReservationPartyAvailability(festival,booth,firstAvailable?.dataset.time||slots[0]);
+  openOverlay('reservationModal');
+}
+function resolvedReservationInfo(reservation){
+  const festival=festivals().find(item=>item.id===reservation?.festivalId);
+  const booth=festival?.booths?.find(item=>item.id===reservation?.boothId);
+  return {
+    festivalName:reservation?.festivalName||festival?.name||'행사',
+    boothName:reservation?.boothName||booth?.name||'체험 부스',
+    location:reservation?.location||booth?.location||'장소 미정',
+    duration:reservation?.duration||booth?.duration||'',
+    time:formatReservationSlot(reservation?.time||'즉시 예약'),
+    user:reservation?.user||`${reservation?.studentKey||''} ${reservation?.name||''}`.trim(),
+    groupSize:Math.max(1,Number(reservation?.groupSize||1)),
+    createdAt:Number(reservation?.createdAt||Date.now())
+  };
+}
+function renderTimetable(){
+  const current=session();
+  if(current?.role!=='student'){
+    $('#timetableClassLabel').textContent='학생 로그인 후 학급 시간표를 확인할 수 있습니다.';
+    $('#timetableDayTabs').innerHTML='';
+    $('#timetablePeriodList').innerHTML='<div class="festival-empty">학생 전용 시간표입니다.</div>';
+    return;
+  }
+  const days=['월','화','수','목','금'];
+  const dayNames=['월요일','화요일','수요일','목요일','금요일'];
+  const timetable=(window.firebaseCache?.timetables||[]).find(item=>
+    Number(item.grade)===Number(current.grade)&&Number(item.classNo)===Number(current.classNo)
+  );
+  $('#timetableClassLabel').textContent=`${current.grade}학년 ${current.classNo}반 시간표`;
+  $('#timetableDayTabs').innerHTML=days.map((day,index)=>
+    `<button class="${state.timetableDay===index?'active':''}" data-timetable-day="${index}">${day}</button>`
+  ).join('');
+  $('#timetableDayTitle').textContent=dayNames[state.timetableDay];
+  $('#timetableUpdatedAt').textContent=timetable?.updatedAt
+    ?`${new Date(timetable.updatedAt).toLocaleDateString('ko-KR')} 수정`
+    :'업데이트 없음';
+  const subjects=timetable?.days?.[state.timetableDay]||[];
+  const periodCount=Math.max(7,subjects.length);
+  $('#timetablePeriodList').innerHTML=Array.from({length:periodCount},(_,index)=>{
+    const subject=subjects[index]||'수업 없음';
+    return `<article class="${subject==='수업 없음'?'empty':''}">
+      <span>${index+1}교시</span><b>${esc(subject)}</b>
+    </article>`;
+  }).join('');
+  $$('[data-timetable-day]').forEach(button=>button.addEventListener('click',()=>{
+    state.timetableDay=Number(button.dataset.timetableDay);
+    renderTimetable();
+  }));
+}
+function timetableDocumentId(grade,classNo){return `g${grade}-c${classNo}`}
+function currentAdminTimetable(){
+  const grade=Number($('#adminTimetableGrade').value||1);
+  const classNo=Number($('#adminTimetableClass').value||1);
+  return (window.firebaseCache?.timetables||[]).find(item=>
+    Number(item.grade)===grade&&Number(item.classNo)===classNo
+  )||{grade,classNo,days:Array.from({length:5},()=>Array(7).fill(''))};
+}
+function renderAdminTimetable(){
+  if(!$('#adminTimetableClass').options.length){
+    $('#adminTimetableClass').innerHTML=Array.from({length:15},(_,index)=>`<option value="${index+1}">${index+1}반</option>`).join('');
+  }
+  const timetable=currentAdminTimetable();
+  const dayNames=['월','화','수','목','금'];
+  $('#adminTimetableGrid').innerHTML=dayNames.map((day,dayIndex)=>`
+    <section><h3>${day}요일</h3>
+    ${Array.from({length:7},(_,periodIndex)=>`<label><span>${periodIndex+1}교시</span>
+      <input data-timetable-subject="${dayIndex}:${periodIndex}" value="${esc(timetable.days?.[dayIndex]?.[periodIndex]||'')}" placeholder="과목">
+    </label>`).join('')}</section>
+  `).join('');
+}
+function classChatKey(){
+  const current=session();
+  return current?.role==='student'?`g${current.grade}-c${current.classNo}`:'';
+}
+function renderClassChat(){
+  const current=session();
+  if(current?.role!=='student'){
+    $('#classChatMessages').innerHTML='<div class="festival-empty">학생만 반별 채팅을 이용할 수 있습니다.</div>';
+    return;
+  }
+  $('#classChatTitle').textContent=`${current.grade}학년 ${current.classNo}반 채팅방`;
+  $('#classChatMemberLabel').textContent=`${current.grade}-${current.classNo} 실명제`;
+  const messages=[...(window.firebaseCache?.classChatMessages||[])].sort((a,b)=>Number(a.createdAt)-Number(b.createdAt));
+  $('#classChatMessages').innerHTML=messages.length?messages.map(message=>{
+    const mine=message.authorUid===current.uid;
+    return `<article class="class-chat-message ${mine?'mine':''}">
+      <div><b>${esc(message.authorLabel||message.authorName||'학생')}</b>
+      <time>${new Date(message.createdAt).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</time></div>
+      <p>${esc(message.body)}</p>
+    </article>`;
+  }).join(''):'<div class="class-chat-empty">아직 메시지가 없습니다. 첫 메시지를 보내보세요.</div>';
+  const box=$('#classChatMessages');
+  requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight});
+}
+
+
+$('#backToFestivalHub').addEventListener('click',()=>route('festivals'));
+$('#openClassChatButton').addEventListener('click',()=>route('classchat'));
+$('#backToCommunity').addEventListener('click',()=>route('community'));
+$('#openGuestMessageComposer').addEventListener('click',()=>{
+  $('#alertAudience').value='게스트';
+  $('#alertTitle').value='게스트 안내';
+  $('#alertBody').value='';
+  openOverlay('alertComposer');
+});
+
+
+/* ===== v11.27 launch-ready overrides ===== */
+const TIMETABLE_KEYS=['mon','tue','wed','thu','fri'];
+const TIMETABLE_LABELS=['월요일','화요일','수요일','목요일','금요일'];
+
+function normalizeTimetableDays(value){
+  const raw=value?.days??value??{};
+  if(Array.isArray(raw)){
+    return Object.fromEntries(TIMETABLE_KEYS.map((key,index)=>[
+      key,Array.from({length:7},(_,period)=>String(raw?.[index]?.[period]||''))
+    ]));
+  }
+  return Object.fromEntries(TIMETABLE_KEYS.map(key=>[
+    key,Array.from({length:7},(_,period)=>String(raw?.[key]?.[period]||''))
+  ]));
+}
+function timetableForStudent(current=session()){
+  return (window.firebaseCache?.timetables||[]).find(item=>
+    Number(item.grade)===Number(current?.grade)&&Number(item.classNo)===Number(current?.classNo)
+  );
+}
+renderTimetable=function(){
+  const current=session();
+  if(current?.role!=='student'){
+    $('#timetableClassLabel').textContent='학생 로그인 후 학급 시간표를 확인할 수 있습니다.';
+    $('#timetableDayTabs').innerHTML='';
+    $('#timetablePeriodList').innerHTML='<div class="festival-empty">학생 전용 시간표입니다.</div>';
+    return;
+  }
+  const timetable=timetableForStudent(current);
+  const days=normalizeTimetableDays(timetable);
+  const todayIndex=new Date().getDay()-1;
+  $('#timetableClassLabel').textContent=`${current.grade}학년 ${current.classNo}반 시간표`;
+  $('#timetableDayTabs').innerHTML=TIMETABLE_LABELS.map((label,index)=>`
+    <button class="${state.timetableDay===index?'active':''}" data-timetable-day="${index}">
+      ${label.slice(0,1)}${todayIndex===index?'<small>오늘</small>':''}
+    </button>`).join('');
+  $('#timetableDayTitle').textContent=TIMETABLE_LABELS[state.timetableDay];
+  $('#timetableUpdatedAt').textContent=timetable?.updatedAt
+    ?`${new Date(timetable.updatedAt).toLocaleDateString('ko-KR')} 수정`
+    :'업데이트 없음';
+  const subjects=days[TIMETABLE_KEYS[state.timetableDay]]||[];
+  $('#timetablePeriodList').innerHTML=Array.from({length:7},(_,index)=>{
+    const subject=subjects[index]||'수업 없음';
+    return `<article class="${subject==='수업 없음'?'empty':''}">
+      <span>${index+1}교시</span><b>${esc(subject)}</b>
+    </article>`;
+  }).join('');
+  $$('[data-timetable-day]').forEach(button=>button.addEventListener('click',()=>{
+    state.timetableDay=Number(button.dataset.timetableDay);
+    renderTimetable();
+  }));
+};
+currentAdminTimetable=function(){
+  const grade=Number($('#adminTimetableGrade').value||1);
+  const classNo=Number($('#adminTimetableClass').value||1);
+  const found=(window.firebaseCache?.timetables||[]).find(item=>
+    Number(item.grade)===grade&&Number(item.classNo)===classNo
+  );
+  return found||{grade,classNo,days:Object.fromEntries(TIMETABLE_KEYS.map(key=>[key,Array(7).fill('')]))};
+};
+function adminTimetableKey(
+  grade=state.adminTimetableGrade,
+  classNo=state.adminTimetableClass
+){
+  return `g${Number(grade)}-c${Number(classNo)}`;
+}
+function collectAdminTimetableDraft(){
+  const key=adminTimetableKey();
+  const days=Object.fromEntries(
+    TIMETABLE_KEYS.map(dayKey=>[dayKey,Array(7).fill('')])
+  );
+
+  $$('[data-timetable-subject]').forEach(input=>{
+    const [dayKey,periodText]=input.dataset.timetableSubject.split(':');
+    if(days[dayKey]){
+      days[dayKey][Number(periodText)]=input.value;
+    }
+  });
+
+  state.adminTimetableDrafts[key]=days;
+  return days;
+}
+function selectedAdminTimetable(){
+  const grade=Number(state.adminTimetableGrade||1);
+  const classNo=Number(state.adminTimetableClass||1);
+  const key=adminTimetableKey(grade,classNo);
+  const draft=state.adminTimetableDrafts[key];
+
+  if(draft){
+    return {id:key,grade,classNo,days:draft,isDraft:true};
+  }
+
+  const saved=(window.firebaseCache?.timetables||[]).find(item=>
+    Number(item.grade)===grade&&Number(item.classNo)===classNo
+  );
+
+  return saved||{
+    id:key,grade,classNo,
+    days:Object.fromEntries(TIMETABLE_KEYS.map(dayKey=>[dayKey,Array(7).fill('')]))
+  };
+}
+renderAdminTimetable=function(){
+  const gradeSelect=$('#adminTimetableGrade');
+  const classSelect=$('#adminTimetableClass');
+  if(!gradeSelect||!classSelect)return;
+
+  gradeSelect.value=String(state.adminTimetableGrade||1);
+  classSelect.value=String(state.adminTimetableClass||1);
+
+  const timetable=selectedAdminTimetable();
+  const days=normalizeTimetableDays(timetable);
+
+  $('#adminTimetableGrid').innerHTML=TIMETABLE_LABELS.map((dayLabel,dayIndex)=>`
+    <section><h3>${dayLabel}</h3>
+    ${Array.from({length:7},(_,periodIndex)=>`
+      <label>
+        <span>${periodIndex+1}교시</span>
+        <input
+          data-timetable-subject="${TIMETABLE_KEYS[dayIndex]}:${periodIndex}"
+          value="${esc(days[TIMETABLE_KEYS[dayIndex]][periodIndex]||'')}"
+          placeholder="과목">
+      </label>`).join('')}
+    </section>`
+  ).join('');
+};
+
+
+
+$('#adminTimetableGrade').addEventListener('change',event=>{
+  collectAdminTimetableDraft();
+  state.adminTimetableGrade=Number(event.target.value||1);
+  renderAdminTimetable();
+});
+$('#adminTimetableClass').addEventListener('change',event=>{
+  collectAdminTimetableDraft();
+  state.adminTimetableClass=Number(event.target.value||1);
+  renderAdminTimetable();
+});
+$('#adminTimetableGrid').addEventListener('input',event=>{
+  if(!event.target.matches('[data-timetable-subject]'))return;
+  collectAdminTimetableDraft();
+});
+
+/* 반별 채팅 이미지와 알림 */
+function classChatNotifyEnabled(){
+  return window.firebaseCache?.notificationPreference?.classChatEnabled!==false;
+}
+function renderClassChatNotificationButton(){
+  const button=$('#classChatNotificationToggle');
+  if(!button)return;
+  const enabled=classChatNotifyEnabled();
+  button.textContent=enabled?'알림 켜짐':'알림 꺼짐';
+  button.setAttribute('aria-pressed',String(enabled));
+  button.classList.toggle('off',!enabled);
+  const badge=$('#classChatUnreadBadge');
+  if(badge){
+    badge.hidden=!state.classChatUnread;
+    badge.textContent=state.classChatUnread>99?'99+':String(state.classChatUnread);
+  }
+}
+function previewClassChatImage(value){
+  state.pendingImage.classChat=value||'';
+  const src=imageSrc(value);
+  $('#classChatImagePreview').hidden=!src;
+  if(src)$('#classChatImagePreviewImg').src=src;
+  else $('#classChatImagePreviewImg').removeAttribute('src');
+}
+$('#classChatImageInput').addEventListener('change',async event=>{
+  try{
+    previewClassChatImage(await compressImage(event.target.files?.[0]));
+    toast('채팅 사진을 추가했습니다.');
+  }catch(error){toast(error.message)}
+});
+$('#removeClassChatImage').addEventListener('click',()=>{
+  $('#classChatImageInput').value='';
+  previewClassChatImage('');
+});
+$('#classChatNotificationToggle').addEventListener('click',async()=>{
+  const next=!classChatNotifyEnabled();
+  try{
+    await window.baemoonFirebase.setClassChatNotificationPreference(next);
+    window.firebaseCache.notificationPreference={
+      ...(window.firebaseCache.notificationPreference||{}),classChatEnabled:next
+    };
+    renderClassChatNotificationButton();
+    toast(next?'반 채팅 알림을 켰습니다.':'반 채팅 알림을 껐습니다.');
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+});
+function classChatSeenKey(){
+  return `bm_class_chat_seen_v1119_${session()?.uid||'none'}`;
+}
+function handleClassChatMessages(items){
+  const normalized=[...(items||[])].sort((a,b)=>Number(a.createdAt)-Number(b.createdAt));
+  const previousIds=new Set((window.firebaseCache?.classChatMessages||[]).map(item=>item.id));
+  window.firebaseCache.classChatMessages=normalized;
+  const current=session();
+  if(state.classChatInitialized){
+    const incoming=normalized.filter(item=>
+      !previousIds.has(item.id)&&item.authorUid!==current?.uid
+    );
+    if(incoming.length&&state.screen!=='classchat'){
+      state.classChatUnread+=incoming.length;
+      const latest=incoming.at(-1);
+      toast(`${latest.authorName||'반 친구'}님의 새 메시지가 왔습니다.`);
+      if(classChatNotifyEnabled()){
+        showDeviceNotification({
+          id:`classchat-${latest.id}`,
+          title:`${current?.grade}학년 ${current?.classNo}반 채팅`,
+          body:latest.body||'사진을 보냈습니다.',
+          audience:'전체',
+          type:'chat',
+          createdAt:latest.createdAt
+        });
+      }
+    }
+  }
+  state.classChatInitialized=true;
+  renderClassChat();
+  renderClassChatNotificationButton();
+}
+renderClassChat=function(){
+  const current=session();
+  if(current?.role!=='student'){
+    $('#classChatMessages').innerHTML='<div class="festival-empty">학생만 반별 채팅을 이용할 수 있습니다.</div>';
+    return;
+  }
+  if(state.screen==='classchat')state.classChatUnread=0;
+  $('#classChatTitle').textContent=`${current.grade}학년 ${current.classNo}반 채팅방`;
+  const messages=[...(window.firebaseCache?.classChatMessages||[])].sort((a,b)=>Number(a.createdAt)-Number(b.createdAt));
+  $('#classChatMessages').innerHTML=messages.length?messages.map(message=>{
+    const mine=message.authorUid===current.uid;
+    const src=imageSrc(message.image);
+    return `<article class="class-chat-message ${mine?'mine':''}">
+      <div><b>${esc(message.authorLabel||message.authorName||'학생')}</b>
+      <time>${new Date(message.createdAt).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</time></div>
+      ${src?`<img class="class-chat-message-image zoomable-image" src="${src}" data-image="${src}" alt="채팅 사진">`:''}
+      ${message.body?`<p>${esc(message.body)}</p>`:''}
+    </article>`;
+  }).join(''):'<div class="class-chat-empty">아직 메시지가 없습니다. 첫 메시지를 보내보세요.</div>';
+  renderClassChatNotificationButton();
+  bindZoomables();
+  const box=$('#classChatMessages');
+  requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight});
+};
+$('#classChatForm').addEventListener('submit',async event=>{
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  const body=$('#classChatInput').value.trim();
+  const image=state.pendingImage.classChat;
+  if(!body&&!image)return;
+  const button=event.currentTarget.querySelector('button[type="submit"]');
+  button.disabled=true;
+  try{
+    await window.baemoonFirebase.sendClassChatMessage({classKey:classChatKey(),body,image});
+    $('#classChatInput').value='';
+    $('#classChatImageInput').value='';
+    previewClassChatImage('');
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+  finally{button.disabled=false}
+},true);
+
+/* 학교 지도 v11.27 - 편집 가능한 교실 블록 구조 */
+function schoolMaps(){return window.firebaseCache?.schoolMaps||[]}
+function mapSpace(id,name,type,x,y,width,height,rotation=0,links='',extra={}){
+  return {
+    id,name,baseName:name,type,x,y,width,height,rotation,links,
+    description:'',photo:'',background:'#ffffff',textColor:'#111827',
+    backgroundImage:'',...extra
+  };
+}
+function defaultSchoolMap(floor){
+  const f=Number(floor);
+
+  if(f===1){
+    const rooms={};
+
+    rooms['corridor-west']=mapSpace(
+      'corridor-west','서쪽 복도','corridor',
+      13,52,5.5,72,0,
+      '1:corridor-north-west,1:corridor-south-west,1:stairs-west-1,1:stairs-west-2',
+      {background:'#d9dde3'}
+    );
+    rooms['stairs-west-1']=mapSpace(
+      'stairs-west-1','서쪽 계단 A','stairs',
+      5.5,19,10,12,0,'1:corridor-west,2:stairs-west',
+      {background:'#6339a6',textColor:'#ffffff'}
+    );
+    rooms['stairs-west-2']=mapSpace(
+      'stairs-west-2','서쪽 계단 B','stairs',
+      5.5,72,10,12,0,'1:corridor-west,2:stairs-west',
+      {background:'#6339a6',textColor:'#ffffff'}
+    );
+    rooms['west-room-1']=mapSpace('west-room-1','1층 교실 A','room',5.5,34,10,13,0,'1:corridor-west');
+    rooms['west-room-2']=mapSpace('west-room-2','1층 교실 B','room',5.5,49,10,13,0,'1:corridor-west');
+    rooms['west-room-3']=mapSpace('west-room-3','1층 교실 C','room',5.5,88,10,11,0,'1:corridor-west');
+
+    rooms['corridor-north-west']=mapSpace(
+      'corridor-north-west','북쪽 복도 서편','corridor',
+      31,15,31,5.5,0,'1:corridor-west,1:corridor-north-east,1:corridor-ring-west',
+      {background:'#d9dde3'}
+    );
+    rooms['corridor-north-east']=mapSpace(
+      'corridor-north-east','북쪽 복도 동편','corridor',
+      62,15,31,5.5,0,'1:corridor-north-west,1:corridor-east,1:corridor-ring-east',
+      {background:'#d9dde3'}
+    );
+    const northNames=['준비실','음악실','미술실','동아리실','상담실','학생회실'];
+    northNames.forEach((name,index)=>{
+      const id=`north-room-${index+1}`;
+      const x=22+index*10;
+      rooms[id]=mapSpace(id,name,'room',x,7.2,9,9,0,
+        index<3?'1:corridor-north-west':'1:corridor-north-east');
+    });
+
+    rooms['corridor-ring-west']=mapSpace(
+      'corridor-ring-west','중앙 서쪽 복도','corridor',
+      28,47,5,49,7,'1:corridor-north-west,1:corridor-ring-south-west,1:hall-main',
+      {background:'#d9dde3'}
+    );
+    rooms['corridor-ring-east']=mapSpace(
+      'corridor-ring-east','중앙 동쪽 복도','corridor',
+      72,46,5,50,-5,'1:corridor-north-east,1:corridor-ring-south-east,1:hall-main,1:corridor-east',
+      {background:'#d9dde3'}
+    );
+    rooms['corridor-ring-south-west']=mapSpace(
+      'corridor-ring-south-west','중앙 남서 복도','corridor',
+      40,78,28,5,20,'1:corridor-ring-west,1:corridor-ring-south-east,1:corridor-south-west',
+      {background:'#d9dde3'}
+    );
+    rooms['corridor-ring-south-east']=mapSpace(
+      'corridor-ring-south-east','중앙 남동 복도','corridor',
+      61,79,28,5,-14,'1:corridor-ring-east,1:corridor-ring-south-west,1:corridor-south-east',
+      {background:'#d9dde3'}
+    );
+
+    rooms['hall-main']=mapSpace(
+      'hall-main','중앙 행사장','hall',
+      50,46,36,39,0,
+      '1:corridor-ring-west,1:corridor-ring-east,1:corridor-ring-south-west,1:corridor-ring-south-east',
+      {background:'#f5f1e7',clipPath:'polygon(8% 0,92% 0,100% 18%,94% 88%,55% 100%,7% 86%,0 22%)'}
+    );
+
+    rooms['center-booth-1']=mapSpace(
+      'center-booth-1','행사 공간 A','room',
+      36,61,14,12,-20,'1:corridor-ring-west,1:corridor-ring-south-west'
+    );
+    rooms['center-booth-2']=mapSpace(
+      'center-booth-2','행사 공간 B','room',
+      50,68,16,12,8,'1:corridor-ring-south-west,1:corridor-ring-south-east'
+    );
+    rooms['center-booth-3']=mapSpace(
+      'center-booth-3','행사 공간 C','room',
+      64,61,14,12,18,'1:corridor-ring-east,1:corridor-ring-south-east'
+    );
+    rooms['center-booth-4']=mapSpace(
+      'center-booth-4','행사 공간 D','room',
+      48,87,16,10,-5,'1:corridor-ring-south-west'
+    );
+    rooms['center-booth-5']=mapSpace(
+      'center-booth-5','행사 공간 E','room',
+      66,87,14,10,-18,'1:corridor-ring-south-east'
+    );
+
+    rooms['corridor-east']=mapSpace(
+      'corridor-east','동쪽 복도','corridor',
+      81,50,5.5,66,0,'1:corridor-north-east,1:corridor-south-east,1:stairs-east,1:hall-east',
+      {background:'#d9dde3'}
+    );
+    rooms['stairs-east']=mapSpace(
+      'stairs-east','동쪽 계단','stairs',
+      88,17,9,12,0,'1:corridor-east,2:stairs-east',
+      {background:'#6339a6',textColor:'#ffffff'}
+    );
+    rooms['hall-east']=mapSpace(
+      'hall-east','강당·체육관','hall',
+      93,52,12,58,0,'1:corridor-east',
+      {background:'#eee7f7'}
+    );
+
+    rooms['corridor-south-west']=mapSpace(
+      'corridor-south-west','남서 복도','corridor',
+      25,93,28,5,0,'1:corridor-west,1:corridor-ring-south-west,1:entrance-main',
+      {background:'#d9dde3'}
+    );
+    rooms['corridor-south-east']=mapSpace(
+      'corridor-south-east','남동 복도','corridor',
+      73,94,27,5,0,'1:corridor-east,1:corridor-ring-south-east,1:entrance-main',
+      {background:'#d9dde3'}
+    );
+    rooms['entrance-main']=mapSpace(
+      'entrance-main','본관 출입구','entrance',
+      50,96,16,7,0,'1:corridor-south-west,1:corridor-south-east',
+      {background:'#dff4e7'}
+    );
+
+    return {
+      id:'floor-1',floor:1,title:'1층 행사 안내도',
+      background:'#faf9f5',backgroundImage:'',layoutVersion:3,points:rooms
+    };
+  }
+
+  const grade=f===2?2:3;
+  const rooms={};
+  const corridorIds=['corridor-w','corridor-mw','corridor-me','corridor-e'];
+  const corridorXs=[21,41,61,81];
+
+  corridorIds.forEach((id,index)=>{
+    const links=[];
+    if(index>0)links.push(`${f}:${corridorIds[index-1]}`);
+    if(index<corridorIds.length-1)links.push(`${f}:${corridorIds[index+1]}`);
+    rooms[id]=mapSpace(
+      id,`${f}층 중앙 복도 ${index+1}`,'corridor',
+      corridorXs[index],52,21,7,0,links.join(','),
+      {background:'#d9dde3'}
+    );
+  });
+
+  const westFloorLinks=f===2
+    ?`${f}:corridor-w,1:stairs-west-1,3:stairs-west`
+    :`${f}:corridor-w,2:stairs-west`;
+  const eastFloorLinks=f===2
+    ?`${f}:corridor-e,1:stairs-east,3:stairs-east`
+    :`${f}:corridor-e,2:stairs-east`;
+
+  rooms['stairs-west']=mapSpace(
+    'stairs-west','서쪽 계단','stairs',
+    7,29,9,18,0,westFloorLinks,
+    {background:'#6339a6',textColor:'#ffffff'}
+  );
+  rooms['stairs-east']=mapSpace(
+    'stairs-east','동쪽 계단','stairs',
+    93,69,9,18,0,eastFloorLinks,
+    {background:'#6339a6',textColor:'#ffffff'}
+  );
+
+  for(let index=0;index<8;index++){
+    const roomNo=index+1;
+    const id=`room-${grade}-${roomNo}`;
+    const x=18+index*9.5;
+    const corridorIndex=Math.min(3,Math.floor(index/2));
+    rooms[id]=mapSpace(
+      id,`${grade}-${roomNo}`,'room',
+      x,27,8.5,18,0,`${f}:${corridorIds[corridorIndex]}`
+    );
+  }
+
+  const lowerNames=f===2
+    ?['시청각실','도서관','컴퓨터실','과학실','상담실','동아리실']
+    :['진로활동실','대회의실','미디어실','과학실','상담실','동아리실'];
+
+  lowerNames.forEach((name,index)=>{
+    const id=`lower-room-${index+1}`;
+    const x=22+index*12;
+    const corridorIndex=Math.min(3,Math.floor(index/1.5));
+    rooms[id]=mapSpace(
+      id,name,'room',
+      x,76,10.5,18,0,`${f}:${corridorIds[corridorIndex]}`
+    );
+  });
+
+  rooms['restroom-west']=mapSpace(
+    'restroom-west','화장실','restroom',
+    8,74,8,16,0,`${f}:corridor-w`,
+    {background:'#fff1d6'}
+  );
+  rooms['restroom-east']=mapSpace(
+    'restroom-east','화장실','restroom',
+    92,27,8,16,0,`${f}:corridor-e`,
+    {background:'#fff1d6'}
+  );
+
+  return {
+    id:`floor-${f}`,floor:f,title:`${f}층 행사 안내도`,
+    background:'#fbfaf7',backgroundImage:'',layoutVersion:3,points:rooms
+  };
+}
+function cloneMap(value){return JSON.parse(JSON.stringify(value))}
+function floorMap(floor){
+  const base=defaultSchoolMap(floor);
+  const saved=schoolMaps().find(item=>Number(item.floor)===Number(floor));
+  if(!saved||Number(saved.layoutVersion||0)<3)return cloneMap(base);
+  const savedPoints=saved.points&&typeof saved.points==='object'&&!Array.isArray(saved.points)
+    ?saved.points:null;
+  return {
+    ...base,...saved,
+    background:saved.background||base.background,
+    backgroundImage:saved.backgroundImage||'',
+    points:savedPoints&&Object.keys(savedPoints).length?savedPoints:base.points
+  };
+}
+function mapPoints(doc){
+  const points=doc?.points&&typeof doc.points==='object'&&!Array.isArray(doc.points)?doc.points:{};
+  return Object.values(points).map(point=>({
+    width:Number(point.width||12),height:Number(point.height||10),
+    rotation:Number(point.rotation||0),background:point.background||'#ffffff',
+    textColor:point.textColor||'#111827',backgroundImage:point.backgroundImage||'',
+    ...point,floor:Number(point.floor||doc.floor),globalId:`${Number(point.floor||doc.floor)}:${point.id}`
+  }));
+}
+function allMapPoints(){return [1,2,3].flatMap(floor=>mapPoints(floorMap(floor)))}
+function mapPointByGlobalId(globalId){return allMapPoints().find(point=>point.globalId===globalId)}
+function mapRoomStyle(point){
+  const image=imageSrc(point.backgroundImage);
+  return [
+    `left:${Number(point.x||50)}%`,
+    `top:${Number(point.y||50)}%`,
+    `width:${Number(point.width||12)}%`,
+    `height:${Number(point.height||10)}%`,
+    `transform:translate(-50%,-50%) rotate(${Number(point.rotation||0)}deg)`,
+    `background-color:${point.background||'#ffffff'}`,
+    `color:${point.textColor||'#111827'}`,
+    image?`background-image:linear-gradient(rgba(17,24,39,.18),rgba(17,24,39,.18)),url("${image}")`:'',
+    point.clipPath?`clip-path:${point.clipPath}`:''
+  ].filter(Boolean).join(';');
+}
+function renderRouteSelectors(){
+  const points=allMapPoints()
+    .filter(point=>point.type!=='corridor')
+    .sort((a,b)=>a.floor-b.floor||String(a.name).localeCompare(String(b.name),'ko'));
+  const startValue=$('#routeStart').value;
+  const endValue=$('#routeEnd').value;
+  const options='<option value="">선택하세요</option>'+points.map(point=>
+    `<option value="${esc(point.globalId)}">${point.floor}F · ${esc(point.name)}</option>`
+  ).join('');
+  $('#routeStart').innerHTML=options;
+  $('#routeEnd').innerHTML=options;
+  if(points.some(point=>point.globalId===startValue))$('#routeStart').value=startValue;
+  if(points.some(point=>point.globalId===endValue))$('#routeEnd').value=endValue;
+}
+function currentRouteSegment(floor){
+  return (state.currentRoutePath||[]).filter(point=>Number(point.floor)===Number(floor));
+}
+function renderGuide(){
+  const map=floorMap(state.currentMapFloor);
+  const points=mapPoints(map);
+  $$('#floorTabs button').forEach(button=>button.classList.toggle(
+    'active',Number(button.dataset.floor)===Number(state.currentMapFloor)
+  ));
+  $('#floorTitle').textContent=map.title||`${state.currentMapFloor}층 안내도`;
+  $('#mapPointCount').textContent=`${points.filter(point=>point.type!=='corridor').length}개 공간`;
+
+  const blueprint=$('#schoolBlueprint');
+  const floorImage=imageSrc(map.backgroundImage);
+  blueprint.style.backgroundColor=map.background||'#f5f2ea';
+  blueprint.style.backgroundImage=floorImage?`url("${floorImage}")`:'';
+  blueprint.innerHTML=points.map(point=>`
+    <button class="school-map-room map-type-${esc(point.type||'room')}"
+      style="${mapRoomStyle(point)}" data-map-point="${esc(point.globalId)}"
+      title="${esc(point.name)}">
+      <span>${esc(point.name)}</span>
+      ${point.baseName&&point.baseName!==point.name?`<small>${esc(point.baseName)}</small>`:''}
+    </button>`).join('');
+  $('#mapEmptyState').hidden=points.length>0;
+
+  $$('[data-map-point]').forEach(button=>button.addEventListener('click',()=>{
+    openMapPointDetail(button.dataset.mapPoint);
+  }));
+
+  const segment=currentRouteSegment(state.currentMapFloor);
+  const overlay=$('#routeOverlay');
+  if(segment.length>=2){
+    const path=segment.map(point=>`${Number(point.x||50)*10},${Number(point.y||50)*7}`).join(' ');
+    overlay.innerHTML=`<polyline points="${path}" class="map-route-line"></polyline>`+
+      segment.map((point,index)=>`<circle cx="${Number(point.x||50)*10}" cy="${Number(point.y||50)*7}"
+        r="${index===0||index===segment.length-1?13:8}" class="map-route-node"></circle>`).join('');
+  }else overlay.innerHTML='';
+  renderRouteSelectors();
+}
+function openMapPointDetail(globalId){
+  const point=mapPointByGlobalId(globalId);
+  if(!point)return;
+  state.mapPointDetailId=globalId;
+  $('#mapPointDetailFloor').textContent=`${point.floor}F · ${point.baseName||point.name}`;
+  $('#mapPointDetailName').textContent=point.name;
+  $('#mapPointDetailDescription').textContent=point.description||'등록된 상세 설명이 없습니다.';
+  const src=imageSrc(point.photo||point.backgroundImage);
+  const photo=$('#mapPointDetailPhoto');
+  photo.style.backgroundImage=src?`url("${src}")`:'';
+  photo.classList.toggle('empty',!src);
+  photo.textContent=src?'':'사진 없음';
+  openOverlay('mapPointDetailModal');
+}
+$('#mapPointSetDestination').addEventListener('click',()=>{
+  const point=mapPointByGlobalId(state.mapPointDetailId);
+  if(!point)return;
+  state.currentMapFloor=point.floor;
+  renderGuide();
+  $('#routeEnd').value=point.globalId;
+  closeOverlay('mapPointDetailModal');
+  toast('목적지로 설정했습니다. 출발지를 선택해주세요.');
+});
+function edgeDistance(a,b){
+  const floorPenalty=Math.abs(Number(a.floor)-Number(b.floor))*120;
+  return Math.hypot(Number(a.x)-Number(b.x),Number(a.y)-Number(b.y))+floorPenalty;
+}
+function buildMapGraph(){
+  const points=allMapPoints();
+  const byId=new Map(points.map(point=>[point.globalId,point]));
+  const edges=new Map(points.map(point=>[point.globalId,new Map()]));
+  const link=(a,b)=>{
+    if(!byId.has(a)||!byId.has(b)||a===b)return;
+    const distance=edgeDistance(byId.get(a),byId.get(b));
+    edges.get(a).set(b,Math.min(edges.get(a).get(b)??Infinity,distance));
+    edges.get(b).set(a,Math.min(edges.get(b).get(a)??Infinity,distance));
+  };
+  points.forEach(point=>{
+    String(point.links||'').split(',').map(value=>value.trim()).filter(Boolean)
+      .forEach(target=>link(point.globalId,target));
+  });
+  return {points,byId,edges};
+}
+function shortestMapPath(startId,endId){
+  const {points,byId,edges}=buildMapGraph();
+  if(!byId.has(startId)||!byId.has(endId))return [];
+  const dist=new Map(points.map(point=>[point.globalId,Infinity]));
+  const prev=new Map();
+  const unvisited=new Set(points.map(point=>point.globalId));
+  dist.set(startId,0);
+  while(unvisited.size){
+    let current=null,best=Infinity;
+    unvisited.forEach(id=>{if(dist.get(id)<best){best=dist.get(id);current=id}});
+    if(current===null||best===Infinity)break;
+    unvisited.delete(current);
+    if(current===endId)break;
+    edges.get(current)?.forEach((weight,next)=>{
+      if(!unvisited.has(next))return;
+      const candidate=best+weight;
+      if(candidate<dist.get(next)){dist.set(next,candidate);prev.set(next,current)}
+    });
+  }
+  const ids=[];
+  let cursor=endId;
+  while(cursor){ids.unshift(cursor);if(cursor===startId)break;cursor=prev.get(cursor)}
+  return ids[0]===startId?ids.map(id=>byId.get(id)):[];
+}
+function routeStepText(path){
+  if(!path.length)return [];
+  const steps=[`${path[0].floor}층 ${path[0].name}에서 출발합니다.`];
+  for(let index=1;index<path.length;index++){
+    const before=path[index-1],current=path[index];
+    if(before.floor!==current.floor){
+      const method=[before.type,current.type].includes('elevator')?'엘리베이터':'계단';
+      steps.push(`${method}을 이용해 ${current.floor}층으로 이동합니다.`);
+    }else if(index===path.length-1){
+      steps.push(`${current.name}에 도착합니다.`);
+    }else{
+      steps.push(`${current.name} 방향으로 이동합니다.`);
+    }
+  }
+  return steps;
+}
+function runRouteSearch(){
+  const startId=$('#routeStart').value,endId=$('#routeEnd').value;
+  if(!startId||!endId)return toast('출발지와 목적지를 모두 선택해주세요.');
+  if(startId===endId)return toast('출발지와 목적지가 같습니다.');
+  const path=shortestMapPath(startId,endId);
+  if(!path.length)return toast('연결된 경로를 찾지 못했습니다. 관리자 지도에서 공간 연결을 확인해주세요.');
+  state.currentRoutePath=path;
+  state.currentMapFloor=path[0].floor;
+  const steps=routeStepText(path);
+  $('#routeResult').innerHTML=`<span class="route-number">${path.length}</span><div>
+    <b>${esc(path[0].name)} → ${esc(path.at(-1).name)}</b>
+    <small>${path.length}개 공간을 연결한 추천 경로입니다.</small></div>`;
+  $('#routeStepList').innerHTML=steps.map((step,index)=>`
+    <article><span>${index+1}</span><p>${esc(step)}</p></article>`).join('');
+  renderGuide();
+  toast('추천 경로를 표시했습니다.');
+}
+$('#findRoute').addEventListener('click',event=>{
+  event.preventDefault();event.stopImmediatePropagation();runRouteSearch();
+},true);
+$('#swapRoutePoints').addEventListener('click',()=>{
+  const start=$('#routeStart').value;
+  $('#routeStart').value=$('#routeEnd').value;
+  $('#routeEnd').value=start;
+});
+$('#floorTabs').addEventListener('click',event=>{
+  const button=event.target.closest('[data-floor]');
+  if(!button)return;
+  event.preventDefault();event.stopImmediatePropagation();
+  state.currentMapFloor=Number(button.dataset.floor);
+  renderGuide();
+},true);
+
+/* 관리자 지도 편집 */
+function ensureAdminMapDraft(floor=state.adminMapFloor){
+  const key=String(floor);
+  if(!state.adminMapDrafts[key]){
+    state.adminMapDrafts[key]=cloneMap(floorMap(floor));
+  }
+  return state.adminMapDrafts[key];
+}
+function allDraftMapPoints(){
+  return [1,2,3].flatMap(floor=>{
+    const doc=state.adminMapDrafts[String(floor)]||floorMap(floor);
+    return mapPoints(doc);
+  });
+}
+function renderAdminMap(){
+  const draft=ensureAdminMapDraft();
+  $$('#adminMapFloorTabs [data-admin-map-floor]').forEach(button=>button.classList.toggle(
+    'active',Number(button.dataset.adminMapFloor)===state.adminMapFloor
+  ));
+  $('#adminMapTitle').value=draft.title||`${state.adminMapFloor}층 안내도`;
+  $('#adminMapBackgroundColor').value=draft.background||'#f5f2ea';
+
+  const blueprint=$('#adminMapBlueprint');
+  const floorImage=imageSrc(draft.backgroundImage);
+  blueprint.style.backgroundColor=draft.background||'#f5f2ea';
+  blueprint.style.backgroundImage=floorImage?`url("${floorImage}")`:'';
+  const points=mapPoints(draft);
+  blueprint.innerHTML=points.map(point=>`
+    <button class="school-map-room admin-map-room map-type-${esc(point.type||'room')}"
+      style="${mapRoomStyle(point)}" data-edit-map-point="${esc(point.id)}">
+      <span>${esc(point.name)}</span>
+      ${point.baseName&&point.baseName!==point.name?`<small>${esc(point.baseName)}</small>`:''}
+    </button>`).join('');
+
+  $('#adminMapPointList').innerHTML=points.length?points.map(point=>`
+    <article>
+      <div><b>${esc(point.name)}</b>
+      <small>${esc(point.baseName||point.type)} · ${Number(point.width).toFixed(1)}×${Number(point.height).toFixed(1)}%</small></div>
+      <div><button data-edit-map-point="${esc(point.id)}">수정</button>
+      <button class="danger" data-delete-map-point="${esc(point.id)}">삭제</button></div>
+    </article>`).join(''):'<div class="admin-empty">등록된 공간이 없습니다.</div>';
+
+  $$('[data-edit-map-point]').forEach(button=>button.addEventListener('click',event=>{
+    event.stopPropagation();
+    openMapPointEditor(button.dataset.editMapPoint);
+  }));
+  $$('[data-delete-map-point]').forEach(button=>button.addEventListener('click',()=>{
+    delete draft.points[button.dataset.deleteMapPoint];
+    renderAdminMap();
+  }));
+}
+function previewMapPointPhoto(value){
+  state.pendingImage.mapPoint=value||'';
+  const src=imageSrc(value);
+  $('#mapPointPhotoPreview').hidden=!src;
+  if(src)$('#mapPointPhotoPreviewImg').src=src;
+  else $('#mapPointPhotoPreviewImg').removeAttribute('src');
+}
+function previewMapRoomBackground(value){
+  state.pendingImage.mapRoom=value||'';
+  const src=imageSrc(value);
+  $('#mapRoomBackgroundPreview').hidden=!src;
+  if(src)$('#mapRoomBackgroundPreviewImg').src=src;
+  else $('#mapRoomBackgroundPreviewImg').removeAttribute('src');
+}
+function renderMapPointLinkOptions(currentId=''){
+  const currentGlobal=`${state.adminMapFloor}:${currentId}`;
+  const current=ensureAdminMapDraft().points?.[currentId];
+  const selected=new Set(String(current?.links||'').split(',').filter(Boolean));
+  $('#mapPointLinkOptions').innerHTML=allDraftMapPoints()
+    .filter(point=>point.globalId!==currentGlobal)
+    .sort((a,b)=>a.floor-b.floor||String(a.name).localeCompare(String(b.name),'ko'))
+    .map(point=>`<label><input type="checkbox" value="${esc(point.globalId)}"
+      ${selected.has(point.globalId)?'checked':''}>
+      <span>${point.floor}F · ${esc(point.name)}</span></label>`).join('')||
+      '<small>먼저 다른 공간을 등록해주세요.</small>';
+}
+function openMapPointEditor(pointId=null,position=null){
+  const draft=ensureAdminMapDraft();
+  const point=pointId?draft.points?.[pointId]:null;
+  state.editingMapPointId=pointId;
+  $('#mapPointEditorTitle').textContent=point?'교실·시설 수정':'공간 추가';
+  $('#mapPointName').value=point?.name||'';
+  $('#mapPointBaseName').value=point?.baseName||point?.name||'';
+  $('#mapPointType').value=point?.type||'room';
+  $('#mapPointDescription').value=point?.description||'';
+  $('#mapRoomBackgroundColor').value=point?.background||'#ffffff';
+  $('#mapRoomTextColor').value=point?.textColor||'#111827';
+  $('#mapPointX').value=Number(point?.x??position?.x??50).toFixed(1);
+  $('#mapPointY').value=Number(point?.y??position?.y??50).toFixed(1);
+  $('#mapPointWidth').value=Number(point?.width??12).toFixed(1);
+  $('#mapPointHeight').value=Number(point?.height??10).toFixed(1);
+  $('#mapPointRotation').value=Number(point?.rotation??0).toFixed(0);
+  previewMapPointPhoto(point?.photo||'');
+  previewMapRoomBackground(point?.backgroundImage||'');
+  renderMapPointLinkOptions(pointId||'');
+  openOverlay('mapPointEditorModal');
+}
+$('#adminMapFloorTabs').addEventListener('click',event=>{
+  const button=event.target.closest('[data-admin-map-floor]');
+  if(!button)return;
+  state.adminMapFloor=Number(button.dataset.adminMapFloor);
+  renderAdminMap();
+});
+$('#adminMapBackgroundColor').addEventListener('input',event=>{
+  ensureAdminMapDraft().background=event.target.value;
+  renderAdminMap();
+});
+$('#adminMapBackgroundImageInput').addEventListener('change',async event=>{
+  try{
+    ensureAdminMapDraft().backgroundImage=await compressImage(event.target.files?.[0]);
+    renderAdminMap();
+    toast(`${state.adminMapFloor}층 배경을 설정했습니다.`);
+  }catch(error){toast(error.message)}
+});
+$('#resetDefaultSchoolMap').addEventListener('click',async()=>{
+  if(!window.__bmAppConfirmV1130||!await window.__bmAppConfirmV1130('기본 구조로 되돌릴까요?',`${state.adminMapFloor}층의 수정 내용이 사라집니다.`,'되돌리기'))return;
+  state.adminMapDrafts[String(state.adminMapFloor)]=cloneMap(defaultSchoolMap(state.adminMapFloor));
+  renderAdminMap();
+  toast('기본 학교 구조를 다시 불러왔습니다.');
+});
+$('#adminMapPreview').addEventListener('click',event=>{
+  if(event.target.closest('[data-edit-map-point]'))return;
+  const rect=$('#adminMapPreview').getBoundingClientRect();
+  openMapPointEditor(null,{
+    x:Math.max(0,Math.min(100,(event.clientX-rect.left)/rect.width*100)),
+    y:Math.max(0,Math.min(100,(event.clientY-rect.top)/rect.height*100))
+  });
+});
+$('#addMapPointButton').addEventListener('click',()=>openMapPointEditor());
+$('#mapPointPhotoInput').addEventListener('change',async event=>{
+  try{previewMapPointPhoto(await compressImage(event.target.files?.[0]))}
+  catch(error){toast(error.message)}
+});
+$('#removeMapPointPhoto').addEventListener('click',()=>previewMapPointPhoto(''));
+$('#mapRoomBackgroundImageInput').addEventListener('change',async event=>{
+  try{previewMapRoomBackground(await compressImage(event.target.files?.[0]))}
+  catch(error){toast(error.message)}
+});
+$('#removeMapRoomBackground').addEventListener('click',()=>previewMapRoomBackground(''));
+$('#saveMapPointButton').addEventListener('click',()=>{
+  const draft=ensureAdminMapDraft();
+  const name=$('#mapPointName').value.trim();
+  if(!name)return toast('표시 이름을 입력해주세요.');
+  const pointId=state.editingMapPointId||id();
+  const links=$$('#mapPointLinkOptions input:checked').map(input=>input.value).join(',');
+  draft.points=draft.points||{};
+  draft.points[pointId]={
+    id:pointId,floor:state.adminMapFloor,name,
+    baseName:$('#mapPointBaseName').value.trim()||name,
+    type:$('#mapPointType').value,
+    description:$('#mapPointDescription').value.trim(),
+    photo:state.pendingImage.mapPoint||'',
+    backgroundImage:state.pendingImage.mapRoom||'',
+    background:$('#mapRoomBackgroundColor').value||'#ffffff',
+    textColor:$('#mapRoomTextColor').value||'#111827',
+    x:Number($('#mapPointX').value||50),
+    y:Number($('#mapPointY').value||50),
+    width:Number($('#mapPointWidth').value||12),
+    height:Number($('#mapPointHeight').value||10),
+    rotation:Number($('#mapPointRotation').value||0),
+    links
+  };
+  closeOverlay('mapPointEditorModal');
+  renderAdminMap();
+});
+$('#saveAdminMapFloor').addEventListener('click',async()=>{
+  const draft=ensureAdminMapDraft();
+  draft.title=$('#adminMapTitle').value.trim()||`${state.adminMapFloor}층 안내도`;
+  draft.background=$('#adminMapBackgroundColor').value||'#f5f2ea';
+  draft.layoutVersion=2;
+  const button=$('#saveAdminMapFloor');
+  button.disabled=true;button.textContent='저장 중…';
+  try{
+    const saved=await window.baemoonFirebase.saveSchoolMap(draft);
+    state.adminMapDrafts[String(state.adminMapFloor)]=cloneMap(saved);
+    toast(`${state.adminMapFloor}층 학교 구조를 저장했습니다.`);
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+  finally{button.disabled=false;button.textContent='층 지도 저장'}
+});
+
+/* 건의함 */
+function suggestions(){return window.firebaseCache?.suggestions||[]}
+function currentSuggestion(){return suggestions().find(item=>item.id===state.currentSuggestionId)}
+function suggestionOwnerLabel(item){
+  if(!isAdmin())return item.visibility==='private'?'내 비공개 건의':'익명 건의자';
+  const user=accounts().find(account=>account.uid===item.ownerUid);
+  return user?`${user.grade}학년 ${user.classNo}반 ${user.number}번 ${user.name}`:`학생 UID ${String(item.ownerUid||'').slice(0,8)}`;
+}
+function anonymousSuggestionAlias(uid){
+  let hash=0;
+  for(const char of String(uid||''))hash=(hash*31+char.charCodeAt(0))%97;
+  return `익명 학생 ${hash+1}`;
+}
+function renderSuggestions(){
+  const list=suggestions()
+    .filter(item=>state.suggestionMode==='public'?item.visibility==='public':item.visibility==='private')
+    .sort((a,b)=>Number(b.updatedAt||b.createdAt)-Number(a.updatedAt||a.createdAt));
+  $('#suggestionList').innerHTML=list.length?list.map(item=>`
+    <button class="suggestion-card ${item.visibility}" data-open-suggestion="${item.id}">
+      <div><span>${item.visibility==='private'?'관리자 1:1':'공개 건의'}</span>
+      <h3>${esc(item.title)}</h3><p>${esc(item.preview||item.body||'')}</p></div>
+      <footer><b>${esc(suggestionOwnerLabel(item))}</b><small>${new Date(item.updatedAt||item.createdAt).toLocaleString('ko-KR')}</small></footer>
+    </button>`).join(''):'<div class="community-empty">등록된 건의가 없습니다.</div>';
+  $$('[data-open-suggestion]').forEach(button=>button.addEventListener('click',()=>openSuggestionThread(button.dataset.openSuggestion)));
+}
+function renderAdminSuggestions(){
+  const list=[...suggestions()].sort((a,b)=>Number(b.updatedAt||b.createdAt)-Number(a.updatedAt||a.createdAt));
+  $('#adminSuggestionCount').textContent=`${list.length}건`;
+  $('#adminSuggestionList').innerHTML=list.length?list.map(item=>`
+    <article class="admin-suggestion-card">
+      <div><span>${item.visibility==='private'?'1:1 비공개':'공개 건의'} · ${esc(item.status||'접수')}</span>
+      <h3>${esc(item.title)}</h3><p>${esc(suggestionOwnerLabel(item))}</p></div>
+      <button data-open-suggestion="${item.id}">대화 열기</button>
+    </article>`).join(''):'<div class="admin-empty">건의가 없습니다.</div>';
+  $$('#adminSuggestionList [data-open-suggestion]').forEach(button=>button.addEventListener('click',()=>openSuggestionThread(button.dataset.openSuggestion)));
+}
+function openSuggestionThread(suggestionId){
+  const item=suggestions().find(value=>value.id===suggestionId);
+  if(!item)return toast('건의 내용을 찾지 못했습니다.');
+  state.currentSuggestionId=suggestionId;
+  $('#suggestionThreadMode').textContent=item.visibility==='private'?'관리자 1:1':'공개 건의';
+  $('#suggestionThreadTitle').textContent=item.title;
+  $('#suggestionThreadMeta').textContent=`${suggestionOwnerLabel(item)} · ${new Date(item.createdAt).toLocaleString('ko-KR')}`;
+  $('#suggestionThreadMessages').innerHTML='<div class="class-chat-empty">대화를 불러오는 중입니다.</div>';
+  window.baemoonFirebase.watchSuggestionMessages(suggestionId);
+  openOverlay('suggestionThreadModal');
+}
+function handleSuggestionMessages(items){
+  window.firebaseCache.suggestionMessages=items||[];
+  const item=currentSuggestion();
+  const current=session();
+  const messages=[...(items||[])].sort((a,b)=>Number(a.createdAt)-Number(b.createdAt));
+  $('#suggestionThreadMessages').innerHTML=messages.length?messages.map(message=>{
+    const mine=message.senderUid===current?.uid;
+    let label='관리자';
+    if(message.senderRole!=='admin'){
+      if(isAdmin()){
+        const user=accounts().find(account=>account.uid===message.senderUid);
+        label=user?`${user.grade}-${user.classNo}-${user.number} ${user.name}`:'학생';
+      }else if(mine)label='나';
+      else label=message.senderUid===item?.ownerUid?'건의자':anonymousSuggestionAlias(message.senderUid);
+    }
+    return `<article class="suggestion-message ${mine?'mine':''} ${message.senderRole==='admin'?'admin':''}">
+      <div><b>${esc(label)}</b><time>${new Date(message.createdAt).toLocaleString('ko-KR')}</time></div>
+      <p>${esc(message.body)}</p>
+    </article>`;
+  }).join(''):'<div class="class-chat-empty">첫 답변을 기다리고 있습니다.</div>';
+  const box=$('#suggestionThreadMessages');
+  requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight});
+}
+function renderSuggestionMode(){
+  $$('#suggestionTabs [data-suggestion-mode]').forEach(button=>button.classList.toggle(
+    'active',button.dataset.suggestionMode===state.suggestionMode
+  ));
+  renderSuggestions();
+}
+$('#suggestionTabs').addEventListener('click',event=>{
+  const button=event.target.closest('[data-suggestion-mode]');
+  if(!button)return;
+  state.suggestionMode=button.dataset.suggestionMode;
+  renderSuggestionMode();
+});
+$('#openSuggestionComposer').addEventListener('click',()=>{
+  if(!isStudent())return toast('학생만 건의를 작성할 수 있습니다.');
+  $('#suggestionVisibility').value=state.suggestionMode;
+  $('#suggestionTitle').value='';
+  $('#suggestionBody').value='';
+  openOverlay('suggestionComposerModal');
+});
+$('#saveSuggestionButton').addEventListener('click',async()=>{
+  const title=$('#suggestionTitle').value.trim(),body=$('#suggestionBody').value.trim();
+  if(!title||!body)return toast('제목과 내용을 입력해주세요.');
+  const button=$('#saveSuggestionButton');button.disabled=true;
+  try{
+    const saved=await window.baemoonFirebase.createSuggestion({
+      visibility:$('#suggestionVisibility').value,title,body
+    });
+    closeOverlay('suggestionComposerModal');
+    state.suggestionMode=saved.visibility;
+    renderSuggestionMode();
+    toast(saved.visibility==='private'?'관리자 1:1 건의를 전달했습니다.':'공개 건의를 등록했습니다.');
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+  finally{button.disabled=false}
+});
+$('#suggestionThreadForm').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const body=$('#suggestionThreadInput').value.trim();
+  if(!body||!state.currentSuggestionId)return;
+  const button=event.currentTarget.querySelector('button');button.disabled=true;
+  try{
+    await window.baemoonFirebase.sendSuggestionMessage(state.currentSuggestionId,body);
+    $('#suggestionThreadInput').value='';
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+  finally{button.disabled=false}
+});
+
+/* 커뮤니티 건의함 전환 */
+const renderCommunityV1118=renderCommunity;
+renderCommunity=function(){
+  const suggestionSelected=state.communityCategory==='건의함';
+  $('#suggestionHub').hidden=!suggestionSelected;
+  $('#communityFeed').hidden=suggestionSelected;
+  $('.community-search').hidden=suggestionSelected;
+  $('#openCommunityComposer').hidden=suggestionSelected||!isStudent();
+  if(suggestionSelected){
+    if(isGuest()){
+      $('#suggestionHub').hidden=true;
+      $('#communityFeed').hidden=false;
+      $('#communityFeed').innerHTML='<div class="community-locked">건의함은 배문고 학생 전용입니다.</div>';
+      return;
+    }
+    renderSuggestionMode();
+    return;
+  }
+  renderCommunityV1118();
+};
+
+/* 관리자 예약 명단은 사람 정보 우선, 작업 버튼은 접기 */
+openAdminBoothReservations=function(key){
+  const entry=adminBoothEntries().find(item=>item.key===key);
+  if(!entry)return toast('부스 정보를 찾지 못했습니다.');
+  state.adminReservationBoothKey=key;
+  const items=boothReservations(entry.festival.id,entry.booth.id);
+  const totalPeople=items.reduce((sum,item)=>sum+Math.max(1,Number(item.groupSize||1)),0);
+  const slots=boothSlotSummary(entry.festival,entry.booth,items);
+  $('#adminBoothReservationTitle').textContent=`${entry.booth.name} 예약자 명단`;
+  $('#adminBoothReservationSummary').textContent=
+    `${entry.festival.name} · ${entry.booth.location||'장소 미정'} · 예약 ${items.length}건 · 누적 ${totalPeople}명`;
+  $('#adminBoothSlotSummary').innerHTML=slots.map(slot=>`
+    <article class="${slot.people>=slot.capacity?'slot-full':''}">
+      <span>${esc(formatReservationSlot(slot.time))}</span><b>${slot.people}/${slot.capacity}명</b><small>${slot.count}건</small>
+    </article>`).join('');
+  $('#adminBoothReservationList').innerHTML=items.length?items.map(item=>{
+    const info=resolvedReservationInfo(item);
+    return `<article class="admin-booth-person-card reservation-person-v2">
+      <div class="reservation-person-main">
+        <b>${esc(info.user)}</b><small>${esc(info.time)} · ${info.groupSize}명</small>
+        <em>${new Date(info.createdAt).toLocaleString('ko-KR')}</em>
+      </div>
+      <button class="reservation-manage-toggle" data-toggle-reservation-actions="${item.id}">관리</button>
+      <div class="reservation-admin-actions" data-reservation-actions="${item.id}" hidden>
+        <button data-admin-reservation-detail="${item.id}">예약 상세</button>
+        <button data-message-reservation="${item.id}">메시지 보내기</button>
+      </div>
+    </article>`;
+  }).join(''):'<div class="admin-empty">이 부스에는 아직 예약자가 없습니다.</div>';
+  $$('[data-toggle-reservation-actions]').forEach(button=>button.addEventListener('click',()=>{
+    const actions=$(`[data-reservation-actions="${button.dataset.toggleReservationActions}"]`);
+    actions.hidden=!actions.hidden;
+    button.textContent=actions.hidden?'관리':'접기';
+  }));
+  $$('#adminBoothReservationList [data-admin-reservation-detail]').forEach(button=>
+    button.addEventListener('click',()=>openReservationDetail(button.dataset.adminReservationDetail))
+  );
+  $$('#adminBoothReservationList [data-message-reservation]').forEach(button=>
+    button.addEventListener('click',()=>openReservationMessage(button.dataset.messageReservation))
+  );
+  openOverlay('adminBoothReservationModal');
+};
+
+/* 라우팅/관리자 렌더 확장 */
+const routeV1118=route;
+route=function(screen,opts={}){
+  routeV1118(screen,opts);
+  if(state.screen==='guide')renderGuide();
+  if(state.screen==='classchat'){
+    state.classChatUnread=0;
+    renderClassChat();
+  }
+};
+const renderAdminV1118=renderAdmin;
+renderAdmin=function(){
+  renderAdminV1118();
+  renderAdminMap();
+  renderAdminSuggestions();
+};
+
+
+/* v11.27 시간표 저장: 문서 캡처 단계에서 단 한 번만 처리 */
+document.addEventListener('click',async event=>{
+  const button=event.target.closest('#saveAdminTimetable');
+  if(!button)return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+
+  if(button.dataset.saving==='1')return;
+  button.dataset.saving='1';
+  button.disabled=true;
+  const originalText=button.textContent;
+  button.textContent='저장 중…';
+
+  const grade=Number(state.adminTimetableGrade||$('#adminTimetableGrade').value||1);
+  const classNo=Number(state.adminTimetableClass||$('#adminTimetableClass').value||1);
+  const key=adminTimetableKey(grade,classNo);
+  const rawDraft=state.adminTimetableDrafts[key]||collectAdminTimetableDraft();
+  const days=Object.fromEntries(TIMETABLE_KEYS.map(dayKey=>[
+    dayKey,
+    Array.from({length:7},(_,periodIndex)=>
+      String(rawDraft?.[dayKey]?.[periodIndex]||'').trim()
+    )
+  ]));
+
+  try{
+    const saved=await window.baemoonFirebase.saveTimetable({
+      id:timetableDocumentId(grade,classNo),grade,classNo,days
+    });
+
+    const cache=window.firebaseCache.timetables||(window.firebaseCache.timetables=[]);
+    const index=cache.findIndex(item=>item.id===saved.id);
+    if(index>=0)cache[index]=saved;
+    else cache.push(saved);
+
+    delete state.adminTimetableDrafts[key];
+    state.adminTimetableGrade=grade;
+    state.adminTimetableClass=classNo;
+    renderAdminTimetable();
+
+    toast(`${grade}학년 ${classNo}반 시간표를 저장했습니다.`);
+  }catch(error){
+    console.error('Timetable save failed:',error);
+    toast(firebaseFriendlyMessage(error));
+  }finally{
+    button.dataset.saving='0';
+    button.disabled=false;
+    button.textContent=originalText||'시간표 저장';
+  }
+},true);
+
+
+/* v11.27 부스 저장: 즉시 예약 허용 + 단일 저장 이벤트 */
+document.addEventListener('click',async event=>{
+  const button=event.target.closest('#saveBoothButton');
+  if(!button)return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+
+  if(button.dataset.saving==='1')return;
+
+  const festival=managerFestival();
+  if(!festival){
+    toast('먼저 관리할 행사를 선택해주세요.');
+    return;
+  }
+
+  const name=$('#boothName').value.trim();
+  const capacity=Number($('#boothCapacity').value||1);
+  const minPeople=Number($('#boothMinPeople').value||1);
+  const maxPeople=Number($('#boothMaxPeople').value||capacity);
+  const duration=Number($('#boothDuration').value||1);
+  const openStart=$('#boothOpenStart').value||'';
+  const openEnd=$('#boothOpenEnd').value||'';
+
+  if(!name){
+    toast('부스 이름을 입력해주세요.');
+    $('#boothName').focus();
+    return;
+  }
+  if(!Number.isInteger(capacity)||capacity<1){
+    toast('회차 정원은 1명 이상이어야 합니다.');
+    $('#boothCapacity').focus();
+    return;
+  }
+  if(!Number.isInteger(minPeople)||minPeople<1||minPeople>capacity){
+    toast('최소 예약 인원은 1명 이상이며 회차 정원보다 클 수 없습니다.');
+    $('#boothMinPeople').focus();
+    return;
+  }
+  if(!Number.isInteger(maxPeople)||maxPeople<minPeople||maxPeople>capacity){
+    toast('1회 예약 최대 인원은 최소 인원 이상이며 회차 전체 정원보다 클 수 없습니다.');
+    $('#boothMaxPeople').focus();
+    return;
+  }
+  if(openStart&&openEnd&&new Date(openStart).getTime()>=new Date(openEnd).getTime()){
+    toast('부스 운영 종료 시간은 시작 시간보다 늦어야 합니다.');
+    $('#boothOpenEnd').focus();
+    return;
+  }
+  if(!Number.isInteger(duration)||duration<1){
+    toast('체험 시간은 1분 이상이어야 합니다.');
+    $('#boothDuration').focus();
+    return;
+  }
+
+  const payload={
+    name,
+    owner:$('#boothOwner').value.trim(),
+    location:$('#boothLocation').value.trim(),
+    description:$('#boothDescription').value.trim(),
+    capacity,
+    minPeople,
+    maxPeople,
+    duration,
+    openStart,
+    openEnd,
+    bookingClosed:false,
+    congestion:'auto',
+    waitlistEnabled:$('#boothWaitlistEnabled').checked,
+    // 빈 배열이면 사용자 화면에서 즉시 예약 부스로 처리됩니다.
+    times:[...state.boothSlotsDraft],
+    slotCapacities:Object.fromEntries(state.boothSlotsDraft.map(slot=>[slot,Math.max(1,Number(state.boothSlotCapacitiesDraft?.[slot]||capacity))])),
+    image:state.pendingImage.booth||''
+  };
+
+  button.dataset.saving='1';
+  button.disabled=true;
+  const originalText=button.textContent;
+  button.textContent='저장 중…';
+
+  try{
+    await updateManagerFestival(currentFestival=>{
+      const currentBooths=Array.isArray(currentFestival.booths)
+        ?currentFestival.booths
+        :[];
+
+      const nextBooths=state.editingBoothId
+        ?currentBooths.map(booth=>
+            booth.id===state.editingBoothId
+              ?{...booth,...payload}
+              :booth
+          )
+        :[...currentBooths,{id:id(),...payload}];
+
+      return {...currentFestival,booths:nextBooths};
+    });
+
+    closeOverlay('boothEditor');
+    toast(
+      payload.times.length
+        ?`${payload.name} 부스를 ${payload.times.length}개 회차로 저장했습니다.`
+        :`${payload.name} 부스를 즉시 예약 방식으로 저장했습니다.`
+    );
+  }catch(error){
+    console.error('Booth save failed:',error);
+    toast(firebaseFriendlyMessage(error));
+  }finally{
+    button.dataset.saving='0';
+    button.disabled=false;
+    button.textContent=originalText||'부스 저장';
+  }
+},true);
+
+
+/* ===== v11.27 행사 운영 기능 ===== */
+function queueEntries(){return (window.firebaseCache?.queueEntries||[]).filter(item=>['waiting','called'].includes(item.status)&&reservationScheduleActive(item))}
+function boothQueueEntries(festivalId,boothId){
+  return queueEntries()
+    .filter(item=>item.festivalId===festivalId&&item.boothId===boothId)
+    .sort((a,b)=>Number(a.createdAt)-Number(b.createdAt));
+}
+function activeBoothQueue(festivalId,boothId){
+  return boothQueueEntries(festivalId,boothId)
+    .filter(item=>['waiting','called'].includes(item.status));
+}
+function ownQueueEntry(festivalId,boothId){
+  const current=session();
+  return boothQueueEntries(festivalId,boothId)
+    .find(item=>item.userUid===current?.uid&&['waiting','called'].includes(item.status));
+}
+function queuePosition(entry){
+  if(!entry)return 0;
+  const issued=Number(entry.queueNumber||entry.queue_number||0);
+  if(issued)return issued;
+  const waiting=boothQueueEntries(entry.festivalId,entry.boothId)
+    .filter(item=>item.status==='waiting'&&String(item.time||'즉시 예약')===String(entry.time||'즉시 예약'));
+  const index=waiting.findIndex(item=>item.id===entry.id);
+  return index>=0?index+1:0;
+}
+function guestDisplayName(profile=session()){
+  if(profile?.role!=='guest')return profile?.name||'';
+  return `${profile.name||'게스트'} #${profile.guestCode||'0000'}`;
+}
+function boothStatusInfo(festival,booth){
+  const slots=(booth.times?.length?normalizedBoothTimes(booth,festival):['즉시 예약']);
+  const slotRatios=slots.map(time=>{
+    const availability=slotAvailability(festival,booth,time);
+    return availability.capacity?availability.reserved/availability.capacity:0;
+  });
+  const maxRatio=Math.max(0,...slotRatios);
+  const waiting=activeBoothQueue(festival.id,booth.id).length;
+
+  let congestion=booth.congestion||'auto';
+  if(congestion==='auto'){
+    congestion=maxRatio>=.8?'crowded':maxRatio>=.45?'normal':'relaxed';
+  }
+
+  const congestionMap={
+    relaxed:{label:'여유',className:'relaxed'},
+    normal:{label:'보통',className:'normal'},
+    crowded:{label:'혼잡',className:'crowded'}
+  };
+  return {
+    closed:Boolean(booth.bookingClosed),
+    congestion:congestionMap[congestion]||congestionMap.relaxed,
+    waiting,
+    full:maxRatio>=1
+  };
+}
+
+/* 게스트 UI: 시간표·커뮤니티 제거, 학교 안내 허용 */
+applyRoleVisibility=function(){
+  const guest=isGuest();
+  const access=guestAccess();
+  const todayHeading=$('#todayHomeHeading');
+  const todayCard=$('#todayCard');
+  const mealSection=$('#mealHomeSection');
+  const festivalSection=$('#festivalHomeSection');
+  const noticeSection=$('#schoolNoticeSection');
+
+  if(todayHeading)todayHeading.hidden=guest;
+  if(todayCard)todayCard.hidden=guest;
+  if(mealSection)mealSection.hidden=guest&&!access.meals;
+  if(festivalSection)festivalSection.hidden=guest&&!access.festivals;
+  if(noticeSection)noticeSection.hidden=guest;
+
+  $$('[data-guest-remove="true"]').forEach(button=>{
+    button.hidden=guest;
+    button.style.display=guest?'none':'';
+  });
+  $$('[data-guest-nav="festivals"]').forEach(button=>{
+    const hidden=guest&&!access.festivals;
+    button.hidden=hidden;
+    button.style.display=hidden?'none':'';
+  });
+
+  const navButtons=$$('#bottomNav [data-go]').filter(button=>
+    !button.hidden&&button.style.display!=='none'
+  );
+  $('#bottomNav').style.gridTemplateColumns=
+    `repeat(${Math.max(1,navButtons.length)},minmax(0,1fr))`;
+
+  if(guest&&['timetable','community','classchat'].includes(state.screen)){
+    route('home');
+  }
+
+  updateAdminContextDock();
+};
+
+/* 관리자도 공통 하단 메뉴를 사용 */
+const routeV1124=route;
+route=function(screen,opts={}){
+  if(!session()){showAuthGate();return}
+
+  
+  if(isGuest()&&['timetable','community','classchat'].includes(screen)){
+    toast('게스트에게는 제공되지 않는 메뉴입니다.');
+    screen='home';
+  }
+  if(isGuest()&&['festivals','festival'].includes(screen)&&!guestAccess().festivals){
+    toast('현재 게스트에게 행사가 공개되지 않았습니다.');
+    screen='home';
+  }
+
+  state.screen=screen;
+  $$('.screen').forEach(item=>item.classList.toggle('active',item.dataset.screen===screen));
+  $$('#bottomNav [data-go]').forEach(button=>{
+    const target=screen==='festival'?'festivals':screen==='admin'?'home':screen;
+    button.classList.toggle('active',button.dataset.go===target);
+  });
+
+  $('#appShell').classList.toggle('admin-mode',isAdmin());
+  if(screen==='admin')renderAdmin();
+  if(screen==='home')renderHome();
+  if(screen==='guide')renderGuide();
+  if(screen==='festivals')renderFestivalHub();
+  if(screen==='festival')renderFestival();
+  if(screen==='timetable')renderTimetable();
+  if(screen==='community')renderCommunity();
+  if(screen==='classchat')renderClassChat();
+  if(screen==='my')renderMy();
+
+  applyRoleVisibility();
+  placeFestivalInlineEditor(screen);
+  updateAdminContextDock();
+  if(screen==='my'&&['student','guest'].includes(session()?.role)){
+    window.baemoonFirebase?.refreshReservationData?.().catch(()=>{});
+  }
+  window.scrollTo({top:0,behavior:'smooth'});
+};
+
+function adminContextTarget(){
+  const mapping={
+    guide:{label:'학교 안내 지도 관리',target:'adminMapSection'},
+    timetable:{label:'학급 시간표 관리',target:'adminTimetableSection'},
+    community:{label:'커뮤니티·건의함 관리',target:'adminCommunitySection'},
+    classchat:{label:'커뮤니티 관리',target:'adminCommunitySection'},
+    festivals:{label:'행사 운영 관리',target:'adminFestivalSection'},
+    festival:{label:'현재 행사 운영 관리',target:'adminFestivalSection'},
+    my:{label:'계정·통계 관리',target:'adminStatsSection'}
+  };
+  return mapping[state.screen]||null;
+}
+function updateAdminContextDock(){
+  const dock=$('#adminContextDock');
+  if(!dock)return;
+  const context=isAdmin()?adminContextTarget():null;
+  dock.hidden=!context;
+  if(context)$('#adminContextLabel').textContent=context.label;
+}
+$('#openAdminContextEditor').addEventListener('click',()=>{
+  const context=adminContextTarget();
+  if(!context)return;
+  if(['festival','festivals'].includes(state.screen)&&state.currentFestivalId){
+    state.managerFestivalId=state.currentFestivalId;
+  }
+  route('admin');
+  setTimeout(()=>document.getElementById(context.target)?.scrollIntoView({
+    behavior:'smooth',block:'start'
+  }),80);
+});
+
+/* 관리자 시간표 화면 */
+const renderTimetableV1124=renderTimetable;
+renderTimetable=function(){
+  if(!isAdmin()){
+    renderTimetableV1124();
+    return;
+  }
+
+  const timetable=selectedAdminTimetable();
+  const days=normalizeTimetableDays(timetable);
+  $('#timetableClassLabel').textContent=
+    `관리자 미리보기 · ${state.adminTimetableGrade}학년 ${state.adminTimetableClass}반`;
+  $('#timetableDayTabs').innerHTML=TIMETABLE_LABELS.map((label,index)=>`
+    <button class="${state.timetableDay===index?'active':''}" data-timetable-day="${index}">
+      ${label.slice(0,1)}
+    </button>`).join('');
+  $('#timetableDayTitle').textContent=TIMETABLE_LABELS[state.timetableDay];
+  $('#timetableUpdatedAt').textContent=timetable?.updatedAt
+    ?`${new Date(timetable.updatedAt).toLocaleDateString('ko-KR')} 수정`
+    :'관리자 편집 전';
+  const subjects=days[TIMETABLE_KEYS[state.timetableDay]];
+  $('#timetablePeriodList').innerHTML=subjects.map((subject,index)=>`
+    <article class="${subject?'':'empty'}">
+      <span>${index+1}교시</span><b>${esc(subject||'수업 없음')}</b>
+    </article>`).join('');
+  $$('[data-timetable-day]').forEach(button=>button.addEventListener('click',()=>{
+    state.timetableDay=Number(button.dataset.timetableDay);
+    renderTimetable();
+  }));
+};
+
+/* 부스 카드 */
+renderBooths=function(festival){
+  festival.booths=festival.booths||[];
+  $('#reservationList').innerHTML=festival.booths.length
+    ?festival.booths.map(booth=>{
+      const image=imageSrc(booth.image);
+      const status=boothStatusInfo(festival,booth);
+      const disabled=status.closed;
+      return `<article class="reservation-card reservation-card-v1125 ${disabled?'closed':''}">
+        <button class="reservation-card-open" data-reserve-booth="${booth.id}" type="button">
+          <div class="reservation-image" style="${image?`background-image:url('${image}')`:''}">
+            ${image?'':`<span>${esc((booth.name||'B').slice(0,1))}</span>`}
+            <div class="booth-card-badges">
+              <i class="congestion-${status.congestion.className}">${status.congestion.label}</i>
+              ${status.closed?'<i class="booking-closed">예약 마감</i>':''}
+              ${status.waiting?`<i class="queue-count">대기 ${status.waiting}</i>`:''}
+            </div>
+          </div>
+          <div class="reservation-card-footer">
+            <h3>${esc(booth.name)}</h3>
+            <span class="reserve-button">${status.closed?(booth.waitlistEnabled?'대기번호':'예약 마감'):'예약하기'}</span>
+          </div>
+        </button>
+      </article>`;
+    }).join('')
+    :'<div class="festival-empty">등록된 체험 부스가 없습니다.</div>';
+
+  $$('[data-reserve-booth]').forEach(button=>button.addEventListener('click',()=>{
+    openReservation(button.dataset.reserveBooth);
+  }));
+};
+
+/* 예약창 */
+openReservation=function(boothId){
+  const current=session();
+  if(!['student','guest'].includes(current?.role)){
+    return toast('학생 또는 게스트로 로그인한 뒤 이용할 수 있습니다.');
+  }
+  if(current.role==='guest'&&!guestAccess().festivals){
+    return toast('현재 게스트에게 행사가 공개되지 않았습니다.');
+  }
+
+  const festival=selectedFestival();
+  const booth=festival?.booths?.find(item=>item.id===boothId);
+  if(!booth)return;
+
+  state.reservationBoothId=boothId;
+  const times=normalizedBoothTimes(booth,festival);
+  const slots=times.length?times:['즉시 예약'];
+  const status=boothStatusInfo(festival,booth);
+  const ownQueue=ownQueueEntry(festival.id,booth.id);
+
+  $('#reservationModalTitle').textContent=booth.name;
+  $('#reservationModeText').textContent=status.closed
+    ?'현재 예약이 마감되었습니다.'
+    :times.length
+      ?'원하는 날짜와 시간을 선택하세요.'
+      :'예약 인원을 선택하면 바로 예약됩니다.';
+
+  const boothImage=imageSrc(booth.image);
+  const detailImage=$('#reservationBoothDetailImage');
+  detailImage.style.backgroundImage=boothImage?`url("${boothImage}")`:'';
+  detailImage.classList.toggle('empty',!boothImage);
+  $('#reservationBoothDetailImageFallback').hidden=!!boothImage;
+  $('#reservationBoothDetailImageFallback').textContent=(booth.name||'B').slice(0,1);
+  $('#reservationBoothDescription').textContent=
+    booth.description||'등록된 부스 설명이 없습니다.';
+  $('#reservationBoothLocation').textContent=`위치 · ${booth.location||'미정'}`;
+  $('#reservationBoothOwner').textContent=`운영 · ${booth.owner||'미정'}`;
+  $('#reservationBoothDuration').textContent=`체험 · ${Number(booth.duration||0)||'-'}분`;
+  $('#reservationBoothCapacity').textContent=
+    `정원 · ${Number(booth.capacity||1)}명 / 최소 ${Number(booth.minPeople||1)}명`;
+
+  $('#reservationBoothStatus').textContent=status.closed?'예약 마감':'예약 가능';
+  $('#reservationBoothStatus').className=
+    `booth-status-badge ${status.closed?'closed':'open'}`;
+  $('#reservationBoothCongestion').textContent=status.congestion.label;
+  $('#reservationBoothCongestion').className=
+    `booth-congestion-badge ${status.congestion.className}`;
+
+  $('#reservationTimeGrid').innerHTML=slots.map((time,index)=>{
+    const availability=slotAvailability(festival,booth,time);
+    const unavailable=status.closed||
+      availability.maxForCurrentUser<availability.minPeople;
+    const label=formatReservationSlot(time);
+    const parts=label.split(' ');
+    const clock=parts.pop();
+    return `<button class="${index===0?'selected':''} ${unavailable?'slot-full':''}"
+      data-time="${esc(time)}" ${unavailable?'disabled':''}>
+      <b>${esc(parts.join(' ')||label)}</b>
+      <em>${esc(clock||'')}</em>
+      <small>${availability.reserved}/${availability.capacity}명</small>
+    </button>`;
+  }).join('');
+
+  const firstAvailable=$$('#reservationTimeGrid button').find(button=>!button.disabled);
+  $$('#reservationTimeGrid button').forEach(button=>button.classList.remove('selected'));
+  if(firstAvailable)firstAvailable.classList.add('selected');
+  $$('#reservationTimeGrid button').forEach(button=>button.addEventListener('click',async()=>{
+    $$('#reservationTimeGrid button').forEach(item=>item.classList.remove('selected'));
+    button.classList.add('selected');
+    updateReservationPartyAvailability(festival,booth,button.dataset.time);
+    await refreshVisibleSlotStatus(festival,booth,button.dataset.time);
+  }));
+
+  $('#reservationUserLabel').firstChild.textContent=
+    current.role==='student'?'학생 예약자':'게스트 예약자';
+  $('#reservationUser').value=current.role==='student'
+    ?`${studentDisplayId(current)} ${current.name}`
+    :`${current.school} · ${guestDisplayName(current)}`;
+
+  const selectedTime=firstAvailable?.dataset.time||slots[0];
+  updateReservationPartyAvailability(festival,booth,selectedTime);
+
+  const waitPanel=$('#reservationWaitlistPanel');
+  const shouldShowWait=Boolean(ownQueue);
+  waitPanel.hidden=!shouldShowWait;
+  if(shouldShowWait){
+    $('#reservationWaitlistTitle').textContent=ownQueue
+      ?`내 대기번호 ${queuePosition(ownQueue)||'-'}번`
+      :'현장 대기번호';
+    $('#reservationWaitlistInfo').textContent=ownQueue
+      ?ownQueue.status==='called'
+        ?'현재 호출되었습니다. 부스로 이동해주세요.'
+        :'순서가 되면 알림함과 화면에 표시됩니다.'
+      :`현재 대기 ${status.waiting}명`;
+    $('#joinBoothQueueButton').textContent=ownQueue?'예약과 번호 취소':'예약하면 번호가 자동 발급됩니다';
+    $('#joinBoothQueueButton').dataset.action=ownQueue?'cancel':'auto';
+  }
+
+  $('#confirmReservation').hidden=status.closed;
+  if(status.closed)$('#confirmReservation').disabled=true;
+
+  openOverlay('reservationModal');
+  setTimeout(()=>refreshVisibleSlotStatus(festival,booth,selectedTime),0);
+};
+
+$('#joinBoothQueueButton').addEventListener('click',async()=>{
+  const festival=selectedFestival();
+  const booth=festival?.booths?.find(item=>item.id===state.reservationBoothId);
+  if(!festival||!booth)return;
+
+  const button=$('#joinBoothQueueButton');
+  button.disabled=true;
+  try{
+    if(button.dataset.action==='cancel'){
+      const own=ownQueueEntry(festival.id,booth.id);
+      if(own)await window.baemoonFirebase.cancelQueueEntry(own.id);
+      toast('대기번호를 취소했습니다.');
+    }else{
+      const selectedTime=$('#reservationTimeGrid .selected')?.dataset.time||'즉시 예약';
+      const current=session();
+      const entry=await window.baemoonFirebase.joinBoothQueue({
+        festivalId:festival.id,festivalName:festival.name,boothId:booth.id,boothName:booth.name,
+        time:selectedTime,displayName:current?.role==='student'?`${studentDisplayId(current)} ${current.name}`:guestDisplayName(current)
+      });
+      toast(`${booth.name} 대기번호를 받았습니다.`);
+    }
+    closeOverlay('reservationModal');
+    renderMy();
+    renderFestival();
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+  finally{button.disabled=false}
+});
+
+/* 내 대기번호와 게스트 확인번호 */
+const renderMyV1124=renderMy;
+renderMy=function(){
+  renderMyV1124();
+  const current=session();
+  if(current?.role==='guest'){
+    $('#profileName').textContent=guestDisplayName(current);
+    $('#profileDetail').textContent=
+      `${current.school||'소속 미입력'} · 동명이인 확인번호 #${current.guestCode||'0000'}`;
+  }
+
+  const mine=queueEntries()
+    .filter(item=>item.userUid===current?.uid&&['waiting','called'].includes(item.status))
+    .sort((a,b)=>Number(a.createdAt)-Number(b.createdAt));
+  $('#myQueueHeading').hidden=!mine.length;
+  $('#myQueueCount').textContent=`${mine.length}건`;
+  $('#myQueueList').innerHTML=mine.map(item=>{
+    const position=queuePosition(item);
+    return `<article class="my-queue-card ${item.status}">
+      <div><span>${item.status==='called'?`호출됨 · 대기번호 ${position||'-'}번`:`호출 전 · 대기번호 ${position||'-'}번`}</span>
+      <h3>${esc(item.boothName)}</h3><p>${esc(item.festivalName)}</p></div>
+      <button data-cancel-queue="${item.id}">대기 취소</button>
+    </article>`;
+  }).join('');
+  $$('[data-cancel-queue]').forEach(button=>button.addEventListener('click',async()=>{
+    try{
+      await window.baemoonFirebase.cancelQueueEntry(button.dataset.cancelQueue);
+      toast('대기번호를 취소했습니다.');
+    }catch(error){toast(firebaseFriendlyMessage(error))}
+  }));
+};
+
+/* 예약 QR */
+const openReservationDetailV1124=openReservationDetail;
+openReservationDetail=function(reservationId){
+  openReservationDetailV1124(reservationId);
+  const reservation=reservationById(reservationId);
+  const current=session();
+  $('#openReservationQrButton').hidden=
+    !reservation||!['student','guest','admin'].includes(current?.role);
+  if(reservation){
+    const grid=$('#reservationDetailGrid');
+    grid.insertAdjacentHTML('beforeend',`
+      <div><span>체크인 상태</span>
+      <b>${reservation.checkedIn?'체크인 완료':'체크인 전'}</b></div>`);
+  }
+};
+function reservationQrPayload(reservation){
+  return `BMRES|${reservation.id}|${reservation.checkInCode||''}`;
+}
+$('#openReservationQrButton').addEventListener('click',async()=>{
+  let reservation=reservationById(state.currentReservationId);
+  if(!reservation)return toast('예약 정보를 찾지 못했습니다.');
+  try{
+    if(!reservation.checkInCode){
+      const updated=await window.baemoonFirebase.ensureReservationCheckInCode(reservation.id);
+      const index=window.firebaseCache.reservations.findIndex(item=>item.id===updated.id);
+      if(index>=0)window.firebaseCache.reservations[index]=updated;
+      reservation=updated;
+    }
+  }catch(error){return toast(firebaseFriendlyMessage(error))}
+  const payload=reservationQrPayload(reservation);
+  const qrUrl=`https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=${encodeURIComponent(payload)}`;
+  $('#reservationQrTitle').textContent=`${reservation.boothName||'체험'} 체크인`;
+  $('#reservationQrImage').src=qrUrl;
+  $('#reservationQrImage').hidden=false;
+  $('#reservationQrLoading').hidden=true;
+  $('#reservationQrCodeText').textContent=payload;
+  $('#reservationQrStatus').textContent=reservation.checkedIn
+    ?`체크인 완료 · ${new Date(reservation.checkedInAt).toLocaleString('ko-KR')}`
+    :'아직 체크인하지 않았습니다.';
+  openOverlay('reservationQrModal');
+});
+
+/* 관리자 QR 스캔 */
+function stopQrScanner(){
+  state.qrScanActive=false;
+  state.qrScannerStream?.getTracks?.().forEach(track=>track.stop());
+  state.qrScannerStream=null;
+  $('#qrScannerVideoWrap').hidden=true;
+  $('#qrScannerVideo').srcObject=null;
+}
+async function processQrCheckIn(code){
+  const result=$('#qrCheckInResult');result.textContent='확인 중…';
+  try{
+    const checked=await window.baemoonFirebase.checkInReservationCode(String(code||'').trim());
+    const reservation=checked.reservation||checked.participation||{};
+    result.textContent='체크인 완료';
+    stopQrScanner();
+    closeOverlay('qrScannerModal');
+    await (window.__bmAppAlertV1130?window.__bmAppAlertV1130('체크인이 완료되었습니다',`${reservation.user||reservation.display_name||'예약자'} · ${reservation.boothName||reservation.booth_name||'부스'}`):Promise.resolve());
+    await window.baemoonFirebase.refreshReservationData?.().catch(()=>{});
+    await window.baemoonFirebase.getAdminStats?.({force:true}).catch(()=>{});
+    renderAdminStats();renderAdminReservations();renderHomeReservations();renderMy();
+    if(state.currentQueueBoothKey){
+      const entry=adminBoothEntries().find(item=>item.key===state.currentQueueBoothKey);
+      if(entry)renderAdminBoothQueue(entry.festival.id,entry.booth.id);
+    }
+    return true;
+  }catch(error){result.textContent=firebaseFriendlyMessage(error);return false}
+}
+$('#openQrScannerButton').addEventListener('click',()=>{
+  $('#manualQrCodeInput').value='';
+  $('#qrCheckInResult').textContent='';
+  openOverlay('qrScannerModal');
+});
+$('#confirmQrCheckInButton').addEventListener('click',()=>processQrCheckIn(
+  $('#manualQrCodeInput').value
+));
+$('#startQrScannerButton').addEventListener('click',async()=>{
+  if(!('BarcodeDetector'in window)){
+    return toast('이 브라우저는 카메라 QR 인식을 지원하지 않습니다. 코드를 직접 입력해주세요.');
+  }
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:'environment'},audio:false
+    });
+    state.qrScannerStream=stream;
+    state.qrScanActive=true;
+    const video=$('#qrScannerVideo');
+    video.srcObject=stream;
+    await video.play();
+    $('#qrScannerVideoWrap').hidden=false;
+    const detector=new BarcodeDetector({formats:['qr_code']});
+
+    const scan=async()=>{
+      if(!state.qrScanActive)return;
+      try{
+        const codes=await detector.detect(video);
+        if(codes[0]?.rawValue){
+          const value=codes[0].rawValue;
+          $('#manualQrCodeInput').value=value;
+          stopQrScanner();
+          await processQrCheckIn(value);
+          return;
+        }
+      }catch{}
+      requestAnimationFrame(scan);
+    };
+    scan();
+  }catch(error){toast('카메라를 열 수 없습니다. 권한을 확인해주세요.')}
+});
+document.addEventListener('click',event=>{
+  if(event.target.closest('[data-close="qrScannerModal"]'))stopQrScanner();
+});
+$('#qrScannerModal').addEventListener('click',event=>{
+  if(event.target===$('#qrScannerModal'))stopQrScanner();
+});
+
+/* 관리자 통계 */
+function allBooths(){
+  return festivals().flatMap(festival=>(festival.booths||[]).map(booth=>({festival,booth})));
+}
+function renderReservationServerStatus(){
+  const box=$('#reservationServerStatus');
+  if(!box)return;
+  const status=window.firebaseCache?.reservationServerStatus||'checking';
+  box.className=`reservation-server-status ${status}`;
+  const map={
+    checking:['서버 확인 중','잠시만 기다려주세요.'],
+    syncing:['서버 동기화 중','예약 정보를 반영합니다.'],
+    connected:['예약 서버 연결됨','정상 연결'],
+    error:['예약 서버 연결 오류','새로고침하거나 예약 서버 동기화를 다시 실행해주세요.']
+  };
+  const [title,detail]=map[status]||map.checking;
+  box.querySelector('b').textContent=title;box.querySelector('small').textContent=detail;
+}
+function renderAdminStats(){
+  if(!isAdmin())return;
+  const payload=window.firebaseCache?.adminReservationStats||{};
+  const summary=payload.summary||{};
+  const reservedPeople=Number(summary.reservedPeople||0);
+  const checkedPeople=Number(summary.checkedInPeople||0);
+  const totalHandled=reservedPeople+checkedPeople;
+  const rate=totalHandled?Math.round(checkedPeople/totalHandled*100):0;
+  $('#statsReservedPeople').textContent=`${reservedPeople}명`;
+  $('#statsCheckedInPeople').textContent=`${checkedPeople}명`;
+  $('#statsCheckInRate').textContent=`체크인율 ${rate}%`;
+  $('#statsWaitingCount').textContent=`${Number(summary.waitingCount||0)}명`;
+  $('#statsClosedBooths').textContent=`${Number(summary.closedSlots||0)}개`;
+  const ranking=payload.ranking||[];
+  $('#adminBoothRanking').innerHTML=ranking.length?ranking.map((item,index)=>`
+    <article><span>${index+1}</span><div><b>${esc(item.booth_name||item.boothName||'부스')}</b>
+    <small>${esc(item.festival_name||item.festivalName||'행사')} · ${esc(formatReservationSlot(item.time||'즉시 예약'))} · 참여 ${Number(item.checked_in_people||item.checkedInPeople||0)}명 · ${Number(item.participation_teams||item.participationTeams||0)}팀</small></div>
+    <i>서버 집계</i></article>`).join(''):'<div class="admin-empty">아직 체크인된 참여 기록이 없습니다.</div>';
+  renderReservationServerStatus();
+}
+$('#refreshAdminStats').addEventListener('click',async()=>{
+  const button=$('#refreshAdminStats');button.disabled=true;
+  try{await window.baemoonFirebase.getAdminStats({force:true});toast('Cloudflare 서버 통계를 갱신했습니다.');}
+  catch(error){toast(firebaseFriendlyMessage(error))}finally{button.disabled=false}
+});
+$('#syncReservationServerButton').addEventListener('click',async()=>{
+  const button=$('#syncReservationServerButton');button.disabled=true;button.textContent='동기화 중…';
+  try{await window.baemoonFirebase.syncReservationSlots(festivals());await window.baemoonFirebase.getAdminStats({force:true});}
+  catch(error){toast(firebaseFriendlyMessage(error))}finally{button.disabled=false;button.textContent='예약 서버 동기화'}
+});
+
+/* 관리자 예약자·대기번호 관리 */
+const openAdminBoothReservationsV1124=openAdminBoothReservations;
+openAdminBoothReservations=async function(key){
+  const entry=adminBoothEntries().find(item=>item.key===key);
+  if(!entry)return toast('부스 정보를 찾지 못했습니다.');
+  state.currentQueueBoothKey=key;
+  try{
+    const time=normalizedBoothTimes(entry.booth,entry.festival)[0]||'즉시 예약';
+    const overview=await window.baemoonFirebase.getAdminBoothOverview({
+      festivalId:entry.festival.id,boothId:entry.booth.id,time
+    });
+    const others=reservations().filter(item=>!(item.festivalId===entry.festival.id&&item.boothId===entry.booth.id));
+    window.firebaseCache.reservations=[...others,...overview.reservations];
+    window.firebaseCache.queueEntries=overview.queue;
+    openAdminBoothReservationsV1124(key);
+    renderAdminBoothQueue(entry.festival.id,entry.booth.id,time);
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+};
+function queueUserLabel(entry){
+  const user=accounts().find(item=>item.uid===entry.userUid);
+  if(user)return `${studentDisplayId(user)} ${user.name}`;
+  const guest=guestAccounts().find(item=>item.uid===entry.userUid);
+  if(guest)return `${guest.name||'게스트'} #${guest.guestCode||'0000'}`;
+  return entry.participantRole==='guest'?'게스트':'학생';
+}
+function renderAdminBoothQueue(festivalId,boothId,time=null){
+  const entries=boothQueueEntries(festivalId,boothId)
+    .filter(item=>!time||String(item.time||'즉시 예약')===String(time))
+    .filter(item=>['waiting','called'].includes(item.status));
+  $('#adminBoothQueueList').innerHTML=entries.length?entries.map((item,index)=>`
+    <article class="${item.status}">
+      <div><span>${item.status==='called'?'호출됨':`${index+1}번`}</span>
+      <b>${esc(queueUserLabel(item))}</b>
+      <small>${new Date(item.createdAt).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</small></div>
+      <div>
+        ${item.status==='waiting'&&index===0?`<button data-call-queue="${item.id}">호출</button>`:''}
+        <button data-queue-checkin="${item.id}">입장 처리</button>
+      </div>
+    </article>`).join(''):'<div class="admin-empty">현재 대기자가 없습니다.</div>';
+  $$('[data-call-queue]').forEach(button=>button.addEventListener('click',async()=>{
+    try{
+      await window.baemoonFirebase.updateQueueStatus(button.dataset.callQueue,'called');
+      const queue=await window.baemoonFirebase.getAdminSlotQueue({festivalId,boothId,time:time||'즉시 예약'});
+      window.firebaseCache.queueEntries=queue;renderAdminBoothQueue(festivalId,boothId,time);
+    }catch(error){toast(firebaseFriendlyMessage(error))}
+  }));
+  $$('[data-queue-checkin]').forEach(button=>button.addEventListener('click',async()=>{
+    try{
+      await window.baemoonFirebase.updateQueueStatus(button.dataset.queueCheckin,'checkedin');
+      const queue=await window.baemoonFirebase.getAdminSlotQueue({festivalId,boothId,time:time||'즉시 예약'});
+      window.firebaseCache.queueEntries=queue;renderAdminBoothQueue(festivalId,boothId,time);
+      toast('대기자를 입장 처리했습니다.');
+    }catch(error){toast(firebaseFriendlyMessage(error))}
+  }));
+}
+$('#callNextQueueButton').addEventListener('click',async()=>{
+  const entry=adminBoothEntries().find(item=>item.key===state.currentQueueBoothKey);
+  if(!entry)return;
+  const next=boothQueueEntries(entry.festival.id,entry.booth.id)
+    .find(item=>item.status==='waiting');
+  if(!next)return toast('호출할 대기자가 없습니다.');
+  try{
+    await window.baemoonFirebase.callNextQueue({festivalId:entry.festival.id,boothId:entry.booth.id,time:next.time||'즉시 예약'});
+    const queue=await window.baemoonFirebase.getAdminSlotQueue({festivalId:entry.festival.id,boothId:entry.booth.id,time:next.time||'즉시 예약'});
+    window.firebaseCache.queueEntries=queue;renderAdminBoothQueue(entry.festival.id,entry.booth.id,next.time||'즉시 예약');
+    toast(`${queueUserLabel(next)}님을 호출했습니다.`);
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+});
+
+/* 관리자 렌더 확장 */
+const renderAdminV1124=renderAdmin;
+renderAdmin=function(){
+  renderAdminV1124();
+  renderAdminStats();
+  updateAdminContextDock();
+};
+
+
+/* ===== v11.27 화면별 관리자 편집 · 홈 배너 · 개인정보 동의 · 시간 만료 ===== */
+
+const PRIVACY_CONSENT_VERSION='2026-07-v1';
+
+function privacyConsentRecord(){
+  try{return JSON.parse(localStorage.getItem('bm_privacy_consent_v1')||'null')}catch{return null}
+}
+function hasPrivacyConsent(){
+  const record=privacyConsentRecord();
+  return record?.version===PRIVACY_CONSENT_VERSION&&record?.required===true&&record?.service===true;
+}
+function updatePrivacyConsentButton(){
+  const button=$('#acceptPrivacyConsent');
+  if(button)button.disabled=!($('#privacyRequiredConsent')?.checked&&$('#privacyServiceConsent')?.checked);
+}
+function continuePrivacyTarget(){
+  const target=state.privacyPendingTarget;
+  state.privacyPendingTarget=null;
+  closeOverlay('privacyConsentModal');
+  if(!target)return;
+  state.privacyBypass=true;
+  document.getElementById(target)?.click();
+}
+function requestPrivacyConsent(targetId=null){
+  state.privacyPendingTarget=targetId;
+  $('#privacyRequiredConsent').checked=hasPrivacyConsent();
+  $('#privacyServiceConsent').checked=hasPrivacyConsent();
+  updatePrivacyConsentButton();
+  openOverlay('privacyConsentModal');
+}
+['privacyRequiredConsent','privacyServiceConsent'].forEach(id=>{
+  document.getElementById(id)?.addEventListener('change',updatePrivacyConsentButton);
+});
+$('#acceptPrivacyConsent')?.addEventListener('click',()=>{
+  if(!$('#privacyRequiredConsent').checked||!$('#privacyServiceConsent').checked)return;
+  const record={
+    version:PRIVACY_CONSENT_VERSION,
+    required:true,
+    service:true,
+    acceptedAt:Date.now()
+  };
+  localStorage.setItem('bm_privacy_consent_v1',JSON.stringify(record));
+  window.baemoonFirebase?.recordPrivacyConsent?.(record).catch(()=>{});
+  continuePrivacyTarget();
+});
+$('#openPrivacyPolicy')?.addEventListener('click',()=>requestPrivacyConsent(null));
+document.addEventListener('click',event=>{
+  const target=event.target.closest('#openStudentLogin,#openAdminLogin,#openGuestConfirm');
+  if(!target||state.privacyBypass)return;
+  if(hasPrivacyConsent())return;
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+  requestPrivacyConsent(target.id);
+},true);
+document.addEventListener('click',event=>{
+  if(!state.privacyBypass)return;
+  if(event.target.closest('#openStudentLogin,#openAdminLogin,#openGuestConfirm')){
+    state.privacyBypass=false;
+  }
+},true);
+
+function defaultHomeBanners(){
+  return [{
+    id:'default-school',
+    kicker:'BAEMOON SCHOOL APP',
+    title:'학교생활을\n한 화면에.',
+    subtitle:'공지와 행사, 예약을 하나의 앱에서 확인합니다.',
+    buttonLabel:'',
+    link:'',
+    color:'#111827',
+    image:'',
+    visible:true
+  }];
+}
+function homeBanners(){
+  const remote=window.firebaseCache?.homeBanners;
+  const items=Array.isArray(remote)?remote.filter(item=>item&&item.visible!==false):[];
+  return items.length?items.slice(0,3):defaultHomeBanners();
+}
+function allHomeBanners(){
+  const remote=window.firebaseCache?.homeBanners;
+  return Array.isArray(remote)?remote.slice(0,3):defaultHomeBanners();
+}
+function renderHomeBanners(){
+  const items=homeBanners();
+  if(!items.length)return;
+  state.homeBannerIndex=Math.min(state.homeBannerIndex,items.length-1);
+  const item=items[state.homeBannerIndex]||items[0];
+  $('#homeHeroKicker').textContent=item.kicker||'BAEMOON SCHOOL APP';
+  $('#homeHeroTitle').innerHTML=esc(item.title||'학교생활을 한 화면에.').replaceAll('\n','<br>');
+  $('#homeHeroSubtitle').textContent=item.subtitle||'';
+  const action=$('#homeHeroAction');
+  action.hidden=false;
+  action.textContent='상세보기';
+  action.href='#';
+  action.dataset.bannerId=String(item.id||state.homeBannerIndex);
+  const visual=$('#homeHeroVisual');
+  const src=imageSrc(item.image);
+  visual.classList.toggle('has-image',!!src);
+  visual.style.backgroundImage=src?`linear-gradient(135deg,rgba(9,16,31,.18),rgba(9,16,31,.58)),url("${src}")`:'';
+  $('#homeHeroCarousel').style.setProperty('--banner-color',item.color||'#111827');
+  const bannerContent=$('#homeHeroCarousel')?.querySelector('.home-banner-content');
+  const bannerVisual=$('#homeHeroVisual');
+  [bannerContent,bannerVisual].forEach(element=>{if(!element)return;element.classList.remove('banner-refresh-v1130');void element.offsetWidth;element.classList.add('banner-refresh-v1130')});
+  $('#homeHeroDots').innerHTML=items.map((_,index)=>`<button type="button" class="${index===state.homeBannerIndex?'active':''}" data-home-banner-dot="${index}" aria-label="${index+1}번째 홍보"></button>`).join('');
+  $$('[data-home-banner-dot]').forEach(button=>button.addEventListener('click',()=>{
+    state.homeBannerIndex=Number(button.dataset.homeBannerDot);
+    renderHomeBanners();
+    restartHomeBannerTimer();
+  }));
+  if(items.length>1&&!state.homeBannerTimer&&!document.hidden)restartHomeBannerTimer();
+}
+function restartHomeBannerTimer(){
+  clearInterval(state.homeBannerTimer);
+  state.homeBannerTimer=null;
+  const items=homeBanners();
+  if(items.length<2)return;
+  state.homeBannerTimer=setInterval(()=>{
+    if(state.screen!=='home'||document.hidden)return;
+    state.homeBannerIndex=(state.homeBannerIndex+1)%items.length;
+    renderHomeBanners();
+  },5500);
+}
+function renderAdminHomeBanners(){
+  const list=$('#adminHomeBannerList');
+  if(!list)return;
+  const items=allHomeBanners();
+  list.innerHTML=items.map((item,index)=>`
+    <article class="admin-home-banner-card">
+      <div class="admin-home-banner-thumb" style="${imageSrc(item.image)?`background-image:url('${imageSrc(item.image)}')`:''}">
+        <span>${index+1}</span>
+      </div>
+      <div><b>${esc(item.title||'제목 없음')}</b><small>${esc(item.subtitle||'')}</small></div>
+      <button type="button" data-edit-home-banner="${esc(item.id)}">수정</button>
+    </article>`).join('');
+  $$('[data-edit-home-banner]').forEach(button=>button.addEventListener('click',()=>openHomeBannerEditor(button.dataset.editHomeBanner)));
+}
+function previewHomeBannerImage(value){
+  state.pendingImage.homeBanner=value||'';
+  const src=imageSrc(value);
+  $('#homeBannerImagePreview').hidden=!src;
+  if(src)$('#homeBannerImagePreviewImg').src=src;
+  else $('#homeBannerImagePreviewImg').removeAttribute('src');
+}
+function openHomeBannerEditor(bannerId=null){
+  const item=allHomeBanners().find(entry=>entry.id===bannerId);
+  state.editingHomeBannerId=bannerId;
+  state.pendingImage.homeBanner=item?.image||'';
+  $('#homeBannerEditorTitle').textContent=item?'홍보 슬라이드 수정':'홍보 슬라이드 추가';
+  $('#homeBannerKicker').value=item?.kicker||'BAEMOON SCHOOL APP';
+  $('#homeBannerTitle').value=item?.title||'';
+  $('#homeBannerSubtitle').value=item?.subtitle||'';
+  $('#homeBannerButtonLabel').value=item?.buttonLabel||'';
+  $('#homeBannerLink').value=item?.link||'';
+  $('#homeBannerColor').value=item?.color||'#111827';
+  $('#homeBannerVisible').checked=item?.visible!==false;
+  $('#homeBannerImage').value='';
+  $('#deleteHomeBannerButton').hidden=!item;
+  previewHomeBannerImage(item?.image||'');
+  openOverlay('homeBannerEditor');
+}
+$('#addHomeBannerButton')?.addEventListener('click',()=>{
+  if(allHomeBanners().length>=3)return toast('홍보 슬라이드는 최대 3개까지 등록할 수 있습니다.');
+  openHomeBannerEditor();
+});
+$('#homeBannerImage')?.addEventListener('change',async event=>{
+  try{previewHomeBannerImage(await compressImage(event.target.files[0]))}
+  catch(error){toast(error.message)}
+});
+$('#removeHomeBannerImage')?.addEventListener('click',()=>previewHomeBannerImage(''));
+$('#saveHomeBannerButton')?.addEventListener('click',async()=>{
+  const title=$('#homeBannerTitle').value.trim();
+  if(!title)return toast('홍보 제목을 입력해주세요.');
+  const item={
+    id:state.editingHomeBannerId||id(),
+    kicker:$('#homeBannerKicker').value.trim(),
+    title,
+    subtitle:$('#homeBannerSubtitle').value.trim(),
+    buttonLabel:$('#homeBannerButtonLabel').value.trim(),
+    link:$('#homeBannerLink').value.trim(),
+    color:$('#homeBannerColor').value||'#111827',
+    image:state.pendingImage.homeBanner||'',
+    visible:$('#homeBannerVisible').checked,
+    updatedAt:Date.now()
+  };
+  let items=allHomeBanners().filter(entry=>entry.id!==item.id);
+  items.push(item);
+  items=items.slice(0,3);
+  try{
+    const saved=await window.baemoonFirebase.saveHomeBanners(items);
+    window.firebaseCache.homeBanners=saved;
+    closeOverlay('homeBannerEditor');
+    state.homeBannerIndex=0;
+    renderHomeBanners();renderAdminHomeBanners();restartHomeBannerTimer();
+    toast('홈 홍보 슬라이드를 저장했습니다.');
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+});
+$('#deleteHomeBannerButton')?.addEventListener('click',async()=>{
+  if(!state.editingHomeBannerId)return;
+  const items=allHomeBanners().filter(item=>item.id!==state.editingHomeBannerId);
+  try{
+    const saved=await window.baemoonFirebase.saveHomeBanners(items);
+    window.firebaseCache.homeBanners=saved;
+    closeOverlay('homeBannerEditor');
+    state.homeBannerIndex=0;
+    renderHomeBanners();renderAdminHomeBanners();restartHomeBannerTimer();
+    toast('홍보 슬라이드를 삭제했습니다.');
+  }catch(error){toast(firebaseFriendlyMessage(error))}
+});
+
+function parseAppDateTime(value){
+  if(!value||value==='즉시 예약')return null;
+  const text=String(value);
+  const koreaTime=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(text)
+    ?`${text}${text.length===16?':00':''}+09:00`
+    :text;
+  const time=new Date(koreaTime).getTime();
+  return Number.isFinite(time)?time:null;
+}
+function boothOpenEndTime(festival,booth){
+  const explicit=parseAppDateTime(booth.openEnd);
+  if(explicit)return explicit;
+  const slots=normalizedBoothTimes(booth,festival).map(parseAppDateTime).filter(Boolean);
+  if(!slots.length)return null;
+  return Math.max(...slots)+Math.max(1,Number(booth.duration||15))*60000;
+}
+function boothOpenStartTime(booth){return parseAppDateTime(booth.openStart)}
+function boothExpired(festival,booth){
+  const end=boothOpenEndTime(festival,booth);
+  return end!==null&&Date.now()>=end;
+}
+function reservationSlotPast(time,festival=selectedFestival()){
+  let source=String(time||'').trim();
+  if(/^\d{2}:\d{2}$/.test(source)){
+    const date=String(festival?.start||festival?.date||new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Seoul'}));
+    source=`${date}T${source}`;
+  }
+  const value=parseAppDateTime(source);
+  return value!==null&&Date.now()>=value;
+}
+function activeFestivalBooths(festival){
+  return (festival.booths||[]).filter(booth=>!boothExpired(festival,booth));
+}
+
+const renderBoothsV1127Base=renderBooths;
+renderBooths=function(festival){
+  const original=festival.booths||[];
+  festival.booths=activeFestivalBooths(festival);
+  renderBoothsV1127Base(festival);
+  festival.booths=original;
+  $$('#reservationList [data-reserve-booth]').forEach(button=>{
+    const booth=original.find(item=>item.id===button.dataset.reserveBooth);
+    if(!booth)return;
+    const start=boothOpenStartTime(booth);
+    if(start&&Date.now()<start){
+      const badge=button.querySelector('.booth-card-badges');
+      badge?.insertAdjacentHTML('beforeend','<i class="queue-count">오픈 예정</i>');
+    }
+  });
+};
+const openReservationV1127Base=openReservation;
+openReservation=function(boothId){
+  const festival=selectedFestival();
+  const booth=festival?.booths?.find(item=>item.id===boothId);
+  if(!festival||!booth)return;
+  if(boothExpired(festival,booth))return toast('운영이 종료된 부스입니다.');
+  openReservationV1127Base(boothId);
+  $('#reservationBoothCapacity').textContent=
+    `회차 정원 ${Number(booth.capacity||1)}명 · 한 번에 ${Number(booth.minPeople||1)}~${Number(booth.maxPeople||booth.capacity||1)}명`;
+  const buttons=$$('#reservationTimeGrid button');
+  buttons.forEach(button=>{
+    if(reservationSlotPast(button.dataset.time,festival)){
+      button.disabled=true;
+      button.classList.add('slot-full','slot-past');
+      const small=button.querySelector('small');
+      if(small)small.textContent='예약 시간 종료';
+    }
+  });
+  let selected=buttons.find(button=>button.classList.contains('selected')&&!button.disabled);
+  if(!selected){
+    buttons.forEach(button=>button.classList.remove('selected'));
+    selected=buttons.find(button=>!button.disabled);
+    selected?.classList.add('selected');
+  }
+  if(selected)updateReservationPartyAvailability(festival,booth,selected.dataset.time);
+  else{
+    $('#confirmReservation').disabled=true;
+    $('#reservationModeText').textContent='예약 가능한 시간이 모두 지났습니다.';
+  }
+};
+
+const applyRoleVisibilityV1127Base=applyRoleVisibility;
+applyRoleVisibility=function(){
+  applyRoleVisibilityV1127Base();
+  $$('[data-admin-only]').forEach(element=>{
+    element.hidden=!isAdmin();
+  });
+  const dock=$('#adminContextDock');
+  if(dock)dock.hidden=true;
+  if(isAdmin())renderAdminHomeBanners();
+};
+
+
+function placeFestivalInlineEditor(screen){
+  const editor=$('#festivalInlineAdminEditor');
+  if(!editor||!isAdmin())return;
+  const target=document.querySelector(`section[data-screen="${screen==='festival'?'festival':'festivals'}"]`);
+  if(target&&editor.parentElement!==target)target.appendChild(editor);
+}
+
+function adminScreenForTarget(targetId){
+  if(['adminTodaySection','adminMealSection','adminNoticeSection','adminNotificationSection','adminHomeBannerSection'].includes(targetId))return ['home','homeInlineAdminEditor'];
+  if(targetId==='adminMapSection')return ['guide','guideInlineAdminEditor'];
+  if(targetId==='adminTimetableSection')return ['timetable','timetableInlineAdminEditor'];
+  if(['adminFestivalSection','adminStatsSection','adminReservationSection'].includes(targetId))return ['festivals','festivalInlineAdminEditor'];
+  if(['adminCommunitySection','adminSuggestionSection'].includes(targetId))return ['community','communityInlineAdminEditor'];
+  if(['adminAccountsSection','adminGuestSection'].includes(targetId))return ['my','myInlineAdminEditor'];
+  return ['admin',null];
+}
+jumpToAdminSection=function(targetId){
+  const [screen,detailsId]=adminScreenForTarget(targetId);
+  route(screen,{preview:true});
+  const details=detailsId?document.getElementById(detailsId):null;
+  if(details)details.open=true;
+  setTimeout(()=>{
+    const target=document.getElementById(targetId);
+    target?.scrollIntoView({behavior:'smooth',block:'start'});
+    target?.classList.add('admin-jump-highlight');
+    setTimeout(()=>target?.classList.remove('admin-jump-highlight'),1300);
+  },80);
+};
+
+$$('.admin-inline-editor').forEach(details=>{
+  details.addEventListener('toggle',()=>{
+    if(!details.open||!isAdmin())return;
+    if(details.id==='guideInlineAdminEditor')renderAdminMap();
+    if(details.id==='timetableInlineAdminEditor')renderAdminTimetable();
+    if(details.id==='festivalInlineAdminEditor'){renderAdminStats();renderAdminReservations();}
+    if(details.id==='communityInlineAdminEditor'){renderAdminCommunity();renderAdminSuggestions();}
+    if(details.id==='myInlineAdminEditor'){renderAdminStudents();renderGuestSettings();}
+    if(details.id==='homeInlineAdminEditor'){renderAdminHomeBanners();renderAdminToday();renderAdminMeals();renderAdminNotices();}
+  });
+});
+
+
+const renderFestivalV1127Base=renderFestival;
+renderFestival=function(){
+  renderFestivalV1127Base();
+  const festival=selectedFestival();
+  if(festival&&$('#festivalBoothCount')){
+    $('#festivalBoothCount').textContent=String(activeFestivalBooths(festival).length);
+  }
+};
+
+const renderHomeV1127Base=renderHome;
+renderHome=function(){
+  renderHomeV1127Base();
+  renderHomeBanners();
+  if(isAdmin())renderAdminHomeBanners();
+};
+const enterAppV1127Base=enterApp;
+enterApp=function(defaultScreen='home'){
+  enterAppV1127Base(defaultScreen==='admin'?'home':defaultScreen);
+  renderHomeBanners();
+  restartHomeBannerTimer();
+  if(hasPrivacyConsent())window.baemoonFirebase?.recordPrivacyConsent?.(privacyConsentRecord()).catch(()=>{});
+};
+$('#previewStudentHome')?.addEventListener('click',()=>{
+  route('home',{preview:true});
+  setTimeout(()=>{const details=$('#homeInlineAdminEditor');if(details)details.open=true},50);
+});
+
+const renderAdminV1127Base=renderAdmin;
+renderAdmin=function(){
+  renderAdminV1127Base();
+  renderAdminHomeBanners();
+  applyRoleVisibility();
+};
+
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden)clearInterval(state.homeBannerTimer);
+  else restartHomeBannerTimer();
+});
+
+seed();
+populateStudentSelectors();
+state.lastDayKey=localDateKey();
+showAuthGate();
+
+window.baemoonApp={
+  state,
+  session,
+  route,
+  enterApp,
+  showAuthGate,
+  renderHome,
+  renderMealCard,
+  renderAdminMeals,
+  renderFestival,
+  renderFestivalHub,
+  renderTimetable,
+  renderClassChat,
+  renderClassChatNotificationButton,
+  renderMy,
+  renderHomeReservations,
+  renderCommunity,
+  renderSuggestions,
+  renderAdmin,
+  renderAdminCommunity,
+  renderAdminStudents,
+  renderNotices,
+  renderTodayCard,
+  renderAdminNotices,
+  renderAdminToday,
+  renderAdminTimetable,
+  renderAdminReservations,
+  renderNotifications,
+  handleBroadcastNotifications,
+  handlePersonalNotifications,
+  handleClassChatMessages,
+  handleSuggestionMessages,
+  handleQueueEntries(items){
+    window.firebaseCache.queueEntries=items||[];
+    renderMy();
+    renderAdminStats();
+    if(state.screen==='festival')renderFestival();
+    if(isAdmin()&&state.currentQueueBoothKey){
+      const entry=adminBoothEntries().find(item=>item.key===state.currentQueueBoothKey);
+      if(entry)renderAdminBoothQueue(entry.festival.id,entry.booth.id);
+    }
+  },
+  renderGuide,
+  renderAdminMap,
+  renderAdminSuggestions,
+  renderAdminStats,
+  renderAdminHomeBanners,
+  renderReservationServerStatus,
+  renderAdminBoothQueue,
+  renderGuestSettings,
+  applyRoleVisibility,
+  imageSrc,
+  markAdminSaved,
+  openCommunityDetail,
+  openOverlay,
+  closeOverlay,
+  closeAllOverlays,
+  ensureServiceWorker,
+  toggleNotify,
+  toast,
+  studentKey,
+  studentDisplayId,
+  setSession(value){activeSession=value;try{localStorage.removeItem(KEYS.session)}catch{}},
+  setFirebaseStatus,
+  clearSession(){activeSession=null;try{localStorage.removeItem(KEYS.session)}catch{}}
+};
+
+window.addEventListener('error',event=>{
+  const errorBox=$('#studentLoginError');
+  if(!window.__baemoonAppReady&&errorBox){
+    errorBox.textContent='앱 화면 초기화 중 오류가 발생했습니다. 페이지를 새로고침해주세요.';
+    errorBox.hidden=false;
+  }
+});
+window.__baemoonAppReady=true;
+window.dispatchEvent(new Event('baemoon:app-ready'));
+
+setInterval(()=>{
+  const key=localDateKey();
+  if(key!==state.lastDayKey){
+    state.lastDayKey=key;
+    renderHome();
+    if(isAdmin())renderAdmin();
+  }else{
+    renderTodayCard();
+    if(isAdmin()&&state.screen==='admin')renderAdminToday();
+  }
+},30000);
+
+
+/* ===== v11.33 예약번호 상태 · 관리자 시간 선택 안정화 ===== */
+(()=>{
+  const VERSION='11.33';
+  const API_BASE='https://baemoon-reservation-server.timon20091220.workers.dev';
+  const LONG_VIBRATION=[700,180,700,180,1200];
+  const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  const htmlEsc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));
+  let firebaseModulesPromise=null;
+  let participationLoadedAt=0;
+  let participationLoading=false;
+  let versionPatched=false;
+  let myQueueLoadedAt=0;
+
+  async function modules(){
+    if(!firebaseModulesPromise){
+      firebaseModulesPromise=Promise.all([
+        import('https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js'),
+        import('https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js'),
+        import('https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js')
+      ]).then(([app,auth,firestore])=>({app,auth,firestore}));
+    }
+    return firebaseModulesPromise;
+  }
+  async function waitForRuntime(){
+    for(let i=0;i<160;i++){
+      if(window.__firebaseRuntimeReady&&window.baemoonFirebase&&window.baemoonApp)return true;
+      await sleep(100);
+    }
+    throw new Error('앱과 Firebase 연결 준비 시간이 초과되었습니다.');
+  }
+  async function currentUser(){
+    const {app,auth}=await modules();
+    try{return auth.getAuth(app.getApp()).currentUser}catch{return null}
+  }
+  async function apiRequest(path,{method='GET',body,retry=true}={}){
+    const user=await currentUser();
+    if(!user)throw new Error('로그인이 필요합니다.');
+    const token=await user.getIdToken(false);
+    let response;
+    try{
+      response=await fetch(`${API_BASE}${path}`,{
+        method,
+        headers:{Authorization:`Bearer ${token}`,Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},
+        body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'
+      });
+    }catch(error){
+      if(retry){await sleep(350);return apiRequest(path,{method,body,retry:false})}
+      throw new Error('예약 서버에 연결할 수 없습니다.');
+    }
+    let payload={};try{payload=await response.json()}catch{}
+    if(response.status===401&&retry){await user.getIdToken(true);return apiRequest(path,{method,body,retry:false})}
+    if(!response.ok||payload?.ok===false){
+      const error=new Error(payload?.error?.message||`예약 서버 오류 (${response.status})`);
+      error.code=payload?.error?.code||`api-${response.status}`;
+      throw error;
+    }
+    return payload;
+  }
+  function normalizeQueue(row={}){
+    return {
+      id:String(row.id||''),slotId:String(row.slot_key||row.slotId||''),festivalId:String(row.festival_id||row.festivalId||''),
+      festivalName:String(row.festival_name||row.festivalName||''),boothId:String(row.booth_id||row.boothId||''),boothName:String(row.booth_name||row.boothName||''),
+      time:String(row.time||'즉시 예약'),userUid:String(row.user_uid||row.userUid||''),participantRole:String(row.participant_role||row.participantRole||''),
+      displayName:String(row.display_name||row.displayName||'예약자'),guestCode:String(row.guest_code||row.guestCode||''),queueNumber:Number(row.queue_number||row.queueNumber||0),
+      status:(String(row.status||'waiting')==='called'&&Number(row.called_at||row.calledAt||0)>0)?'called':'waiting',createdAt:Number(row.created_at||row.createdAt||Date.now()),calledAt:Number(row.called_at||row.calledAt||0)||null,checkedInAt:Number(row.checked_in_at||row.checkedInAt||0)||null,
+      aheadCount:Number(row.aheadCount||0),callCount:Number(row.call_count||row.callCount||0)
+    };
+  }
+  function normalizeReservation(row={}){
+    return {
+      id:String(row.id||''),slotId:String(row.slot_key||row.slotId||''),festivalId:String(row.festival_id||row.festivalId||''),festivalName:String(row.festival_name||row.festivalName||''),
+      boothId:String(row.booth_id||row.boothId||''),boothName:String(row.booth_name||row.boothName||''),time:String(row.time||'즉시 예약'),userUid:String(row.user_uid||row.userUid||''),
+      participantRole:String(row.participant_role||row.participantRole||''),user:String(row.display_name||row.displayName||row.user||'예약자'),name:String(row.display_name||row.displayName||row.name||'예약자'),
+      guestCode:String(row.guest_code||row.guestCode||''),groupSize:Number(row.group_size||row.groupSize||1),status:String(row.status||'confirmed'),checkInCode:String(row.check_in_code||row.checkInCode||''),
+      checkedIn:Boolean(Number(row.checked_in||row.checkedIn||0)),checkedInAt:Number(row.checked_in_at||row.checkedInAt||0)||null,createdAt:Number(row.created_at||row.createdAt||Date.now()),updatedAt:Number(row.updated_at||row.updatedAt||Date.now())
+    };
+  }
+  function festivals(){return Array.isArray(window.firebaseCache?.festivals)?window.firebaseCache.festivals:[]}
+  function managerFestival(){return festivals().find(item=>item.id===window.baemoonApp?.state?.managerFestivalId)}
+  function selectedAdminEntry(){
+    const key=window.baemoonApp?.state?.currentQueueBoothKey;if(!key)return null;
+    for(const festival of festivals())for(const booth of (festival.booths||[]))if(`${festival.id}:${booth.id}`===key)return {festival,booth};
+    return null;
+  }
+  function boothTimes(booth){
+    const values=(Array.isArray(booth?.times)?booth.times:[]).map(item=>typeof item==='string'?item:(item?.value||item?.time||'')).filter(Boolean);
+    return values.length?values:['즉시 예약'];
+  }
+  function appToast(message){window.baemoonApp?.toast?.(message)}
+  function ensureAppDialogV1130(){
+    let overlay=document.querySelector('#bmAppDialogV1130');
+    if(overlay)return overlay;
+    overlay=document.createElement('div');overlay.id='bmAppDialogV1130';overlay.className='bm-app-dialog-v1130';overlay.hidden=true;
+    overlay.innerHTML='<section role="dialog" aria-modal="true"><h2 id="bmDialogTitleV1130"></h2><p id="bmDialogMessageV1130"></p><label id="bmDialogInputWrapV1130" hidden><input id="bmDialogInputV1130" autocomplete="off"></label><div><button type="button" id="bmDialogCancelV1130">취소</button><button type="button" id="bmDialogConfirmV1130">확인</button></div></section>';
+    document.body.append(overlay);return overlay;
+  }
+  function appDialogV1130({title='확인',message='',confirmText='확인',cancelText='취소',cancel=true,input=false,placeholder='',value=''}){
+    const overlay=ensureAppDialogV1130();const titleEl=overlay.querySelector('#bmDialogTitleV1130'),messageEl=overlay.querySelector('#bmDialogMessageV1130');
+    const inputWrap=overlay.querySelector('#bmDialogInputWrapV1130'),inputEl=overlay.querySelector('#bmDialogInputV1130');
+    const ok=overlay.querySelector('#bmDialogConfirmV1130'),no=overlay.querySelector('#bmDialogCancelV1130');
+    titleEl.textContent=title;messageEl.textContent=message;ok.textContent=confirmText;no.textContent=cancelText;no.hidden=!cancel;
+    inputWrap.hidden=!input;inputEl.placeholder=placeholder;inputEl.value=value;overlay.hidden=false;requestAnimationFrame(()=>overlay.classList.add('open'));
+    if(input)setTimeout(()=>inputEl.focus(),50);
+    return new Promise(resolve=>{
+      const finish=result=>{overlay.classList.remove('open');setTimeout(()=>overlay.hidden=true,180);ok.onclick=no.onclick=overlay.onclick=null;resolve(result)};
+      ok.onclick=()=>finish(input?inputEl.value:true);no.onclick=()=>finish(input?null:false);overlay.onclick=e=>{if(e.target===overlay&&cancel)finish(input?null:false)};
+    });
+  }
+  const appConfirmV1130=(title,message,confirmText='확인')=>appDialogV1130({title,message,confirmText});
+  const appAlertV1130=(title,message='')=>appDialogV1130({title,message,cancel:false});
+  window.__bmAppAlertV1130=appAlertV1130;
+  window.__bmAppConfirmV1130=appConfirmV1130;
+  function vibrateLong(){if(navigator.vibrate)try{navigator.vibrate(LONG_VIBRATION)}catch{}}
+
+  async function notifyQueueCall(queue){
+    const uid=String(queue?.user_uid||queue?.userUid||'');if(!uid)return;
+    try{
+      const {app,firestore}=await modules();
+      const db=firestore.getFirestore(app.getApp());
+      const ref=firestore.doc(firestore.collection(db,'userNotifications',uid,'items'));
+      const boothName=String(queue?.booth_name||queue?.boothName||'체험 부스');
+      const time=String(queue?.time||'즉시 예약');
+      await firestore.setDoc(ref,{id:ref.id,title:'대기번호가 호출되었습니다',body:`${boothName} · ${time} · ${Number(queue?.queue_number||queue?.queueNumber||0)}번 순서입니다. QR을 준비하고 부스로 이동해주세요.`,type:'queue',audience:'개인',ownerUid:uid,queueId:String(queue?.id||''),boothName,time,createdAt:Date.now()});
+    }catch(error){console.warn('호출 알림 저장 실패:',error)}
+  }
+
+  function urlBase64ToBytesV1130(value){
+    const pad='='.repeat((4-value.length%4)%4),base64=(value+pad).replace(/-/g,'+').replace(/_/g,'/');
+    return Uint8Array.from(atob(base64),char=>char.charCodeAt(0));
+  }
+  async function syncPushSubscriptionV1130(enabled=true){
+    if(!('serviceWorker'in navigator)||!('PushManager'in window)||!('Notification'in window))return false;
+    const registration=await window.baemoonApp?.ensureServiceWorker?.()||await navigator.serviceWorker.ready;
+    const existing=await registration.pushManager.getSubscription();
+    if(!enabled){if(existing){await window.baemoonFirebase?.removePushSubscription?.(existing.endpoint).catch(()=>{});await existing.unsubscribe().catch(()=>{})}return true}
+    if(Notification.permission!=='granted')return false;
+    const keyResult=await window.baemoonFirebase.getPushPublicKey();
+    if(!keyResult.publicKey)return false;
+    const subscription=existing||await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToBytesV1130(keyResult.publicKey)});
+    await window.baemoonFirebase.savePushSubscription(subscription.toJSON());return true;
+  }
+  let completionPollBusy=false,completionBaseline='';
+  async function pollMyCompletionV1130(){
+    const current=window.baemoonApp?.session?.();if(!current?.uid||!['student','guest'].includes(current.role)||completionPollBusy)return;
+    completionPollBusy=true;
+    try{
+      const overview=await window.baemoonFirebase.getMyServerOverview();
+      const participations=Array.isArray(overview.participations)?overview.participations:[];
+      const latest=participations[0];const key=`bm_completion_baseline_v1130_${current.uid}`;
+      const stored=sessionStorage.getItem(key)||'';
+      if(!completionBaseline)completionBaseline=stored;
+      if(!completionBaseline){completionBaseline=String(latest?.id||'');sessionStorage.setItem(key,completionBaseline);return}
+      if(latest?.id&&String(latest.id)!==completionBaseline){
+        completionBaseline=String(latest.id);sessionStorage.setItem(key,completionBaseline);
+        window.firebaseCache.reservations=(overview.reservations||[]).map(normalizeReservation);
+        window.firebaseCache.queueEntries=(overview.queue||[]).map(normalizeQueue);
+        vibrateLong();await appAlertV1130('체크인이 완료되었습니다',`${latest.booth_name||'부스'} 참여가 완료되었습니다.`);
+        window.baemoonApp?.renderHomeReservations?.();window.baemoonApp?.renderMy?.();
+      }
+    }catch{}finally{completionPollBusy=false}
+  }
+  function startCompletionPollingV1130(){
+    setInterval(()=>pollMyCompletionV1130(),document.hidden?15000:5000);
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollMyCompletionV1130()});
+  }
+
+  function installApiExtensions(){
+    const api=window.baemoonFirebase;
+    const originalCreate=api.createReservation.bind(api);
+    api.createReservation=async payload=>{
+      const result=await originalCreate(payload);
+      if(result?.queue){
+        const queue=normalizeQueue({...result.queue,festivalId:payload.festivalId,festivalName:payload.festivalName,boothId:payload.boothId,boothName:payload.boothName,time:payload.time||'즉시 예약'});
+        const list=window.firebaseCache.queueEntries||(window.firebaseCache.queueEntries=[]);
+        const index=list.findIndex(item=>item.id===queue.id);if(index>=0)list[index]=queue;else list.push(queue);
+        return {...result,queue};
+      }
+      return result;
+    };
+    api.getBoothPurgePreview=payload=>apiRequest(`/api/admin/booth/purge/preview?${new URLSearchParams({festivalId:String(payload.festivalId),boothId:String(payload.boothId)})}`);
+    api.purgeBoothData=payload=>apiRequest('/api/admin/booth/purge',{method:'POST',body:{festivalId:String(payload.festivalId),boothId:String(payload.boothId)}});
+    api.purgeOrphanedBooths=validBooths=>apiRequest('/api/admin/orphans/purge',{method:'POST',body:{validBooths,confirmAll:false}});
+    api.getMyQueueStatus=()=>apiRequest('/api/me/queue-status');
+    api.getMyServerOverview=()=>apiRequest('/api/me/overview');
+    api.getPushPublicKey=()=>apiRequest('/api/push/public-key');
+    api.savePushSubscription=subscription=>apiRequest('/api/push/subscribe',{method:'POST',body:{subscription}});
+    api.removePushSubscription=endpoint=>apiRequest('/api/push/unsubscribe',{method:'POST',body:{endpoint}});
+    api.getParticipations=filters=>{
+      const params=new URLSearchParams();for(const key of ['festivalId','boothId','time','limit'])if(filters?.[key])params.set(key,String(filters[key]));
+      return apiRequest(`/api/admin/participations${params.toString()?`?${params}`:''}`);
+    };
+    api.resetTestReservationData=payload=>apiRequest('/api/admin/test-data/reset',{method:'POST',body:payload});
+    api.skipQueueEntry=queueId=>apiRequest('/api/admin/queue/skip',{method:'POST',body:{queueId:String(queueId)}});
+    api.callNextQueue=async payload=>{
+      const result=await apiRequest('/api/admin/queue/call-next',{method:'POST',body:{festivalId:String(payload.festivalId),boothId:String(payload.boothId),time:String(payload.time||'즉시 예약')}});
+      if(result?.queue&&!result?.limitReached)await notifyQueueCall(result.queue);
+      return result;
+    };
+    api.updateQueueStatus=async(entryId,status)=>{
+      if(status!=='checkedin')throw new Error('지원하지 않는 번호 상태 변경입니다.');
+      const result=await apiRequest('/api/admin/queue/check-in',{method:'POST',body:{queueId:String(entryId)}});
+      window.firebaseCache.queueEntries=(window.firebaseCache.queueEntries||[]).filter(item=>item.id!==entryId);
+      const reservationId=String(result?.reservation?.id||'');
+      window.firebaseCache.reservations=(window.firebaseCache.reservations||[]).filter(item=>item.id!==reservationId);
+      return result;
+    };
+    api.checkInReservationCode=async rawCode=>{
+      const result=await apiRequest('/api/admin/check-in',{method:'POST',body:{payload:String(rawCode||'').trim()}});
+      const reservation=normalizeReservation(result.reservation||{}),queue=result.queue?normalizeQueue(result.queue):null;
+      if(reservation.id)window.firebaseCache.reservations=(window.firebaseCache.reservations||[]).filter(item=>item.id!==reservation.id);
+      if(queue?.id)window.firebaseCache.queueEntries=(window.firebaseCache.queueEntries||[]).filter(item=>item.id!==queue.id);
+      await api.getAdminStats({force:true}).catch(()=>{});
+      return {...result,reservation,queue};
+    };
+    api.cancelQueueEntry=async entryId=>{
+      const entry=(window.firebaseCache.queueEntries||[]).find(item=>item.id===entryId);if(!entry)throw new Error('번호 정보를 찾지 못했습니다.');
+      const result=await apiRequest('/api/queue/cancel',{method:'POST',body:{queueId:entryId,festivalId:entry.festivalId,boothId:entry.boothId,time:entry.time||'즉시 예약'}});
+      window.firebaseCache.queueEntries=(window.firebaseCache.queueEntries||[]).filter(item=>item.id!==entryId);
+      window.firebaseCache.reservations=(window.firebaseCache.reservations||[]).filter(item=>!(item.festivalId===entry.festivalId&&item.boothId===entry.boothId&&String(item.time||'즉시 예약')===String(entry.time||'즉시 예약')));
+      window.baemoonApp?.handleQueueEntries?.(window.firebaseCache.queueEntries);
+      window.baemoonApp?.renderHomeReservations?.();
+      return result;
+    };
+  }
+
+  async function deleteBoothServerFirst(button){
+    if(button.dataset.busy==='1')return;
+    const festival=managerFestival();const booth=festival?.booths?.find(item=>item.id===button.dataset.deleteBooth);
+    if(!festival||!booth)return appToast('부스 정보를 찾지 못했습니다.');
+    button.dataset.busy='1';button.disabled=true;const old=button.textContent;button.textContent='서버 확인 중…';
+    try{
+      const preview=await window.baemoonFirebase.getBoothPurgePreview({festivalId:festival.id,boothId:booth.id});
+      const message=`활성 예약 ${Number(preview.reservations||0)}건과 번호 ${Number(preview.queueEntries||0)}건도 함께 삭제됩니다.`;
+      if(!await appConfirmV1130('부스를 삭제할까요?',message,'삭제'))return;
+      button.textContent='예약 서버 정리 중…';
+      // 서버 정리가 성공해야 Firebase 부스를 삭제합니다. 서버가 멈추면 화면의 부스는 그대로 남습니다.
+      const deleted=await window.baemoonFirebase.purgeBoothData({festivalId:festival.id,boothId:booth.id});
+      button.textContent='부스 삭제 중…';
+      const next=festivals().map(item=>item.id===festival.id?{...item,booths:(item.booths||[]).filter(entry=>entry.id!==booth.id)}:item);
+      try{
+        const saved=await window.baemoonFirebase.saveFestivals(next);window.firebaseCache.festivals=saved;
+      }catch(firebaseError){
+        await window.baemoonFirebase.syncReservationSlots(festivals()).catch(()=>{});
+        throw new Error(`예약 서버 데이터는 정리됐지만 Firebase 부스 삭제에 실패했습니다. 부스는 화면에 남아 있습니다. 다시 삭제해주세요. ${firebaseError.message||''}`);
+      }
+      window.baemoonApp?.renderAdmin?.();window.baemoonApp?.renderHome?.();
+      appToast('부스를 삭제했습니다.');
+    }catch(error){appToast(error.message||'부스 삭제에 실패했습니다.')}finally{button.dataset.busy='0';button.disabled=false;button.textContent=old||'삭제'}
+  }
+  document.addEventListener('click',event=>{
+    const button=event.target.closest('[data-delete-booth]');if(!button)return;
+    event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();deleteBoothServerFirst(button);
+  },true);
+
+  function ensureCapacityHelp(){
+    const input=document.querySelector('#boothCapacity'),label=input?.closest('label');if(!label)return;
+    for(const node of label.childNodes)if(node.nodeType===Node.TEXT_NODE)node.textContent=node.textContent.replace('회차 전체 정원','기본 예약 정원').replace('시간별 예약 가능 인원','기본 예약 정원');
+    if(!label.querySelector('.capacity-help-v1129')){const small=document.createElement('small');small.className='capacity-help-v1129';small.textContent='각 시간의 정원은 아래에서 따로 설정합니다.';label.append(small)}
+  }
+  function ensureQueueGuide(){
+    const panel=document.querySelector('#reservationWaitlistPanel');if(!panel||panel.querySelector('.queue-guide-v1129'))return;
+    const guide=document.createElement('div');guide.className='queue-guide-v1129';guide.innerHTML='<b>예약하면 번호가 바로 발급됩니다.</b>';panel.prepend(guide);
+  }
+  function ensureAdminUtilityButtons(){
+    const section=document.querySelector('#adminStatsSection'),sync=document.querySelector('#syncReservationServerButton');if(!section||!sync)return;
+    section.querySelector('.eyebrow')?.replaceChildren(document.createTextNode('LIVE STATUS'));
+    const heading=section.querySelector('h2');if(heading)heading.textContent='운영 현황';
+    const metricLabels=[['#statsReservedPeople','현재 예약'],['#statsCheckedInPeople','참여 완료'],['#statsWaitingCount','호출 대기'],['#statsClosedBooths','마감 부스']];
+    metricLabels.forEach(([selector,label])=>{const value=section.querySelector(selector);const title=value?.previousElementSibling;if(title)title.textContent=label});
+    sync.textContent=sync.disabled?'동기화 중…':'서버 동기화';
+    const qr=document.querySelector('#openQrScannerButton');if(qr)qr.textContent='QR 확인';
+    const refresh=document.querySelector('#refreshAdminStats');if(refresh)refresh.textContent='새로고침';
+    document.querySelector('#cleanupOrphanReservationsV1129')?.remove();
+    let tools=document.querySelector('#adminDataToolsV1130');
+    if(!tools){
+      tools=document.createElement('details');tools.id='adminDataToolsV1130';tools.className='admin-data-tools-v1130';
+      tools.innerHTML='<summary>데이터 관리</summary><div><button type="button" id="cleanupOrphansV1130">남은 예약 정리</button><button type="button" id="resetTestReservationsV1130">예약 초기화</button></div>';
+      document.querySelector('#reservationServerStatus')?.insertAdjacentElement('afterend',tools);
+      tools.querySelector('#cleanupOrphansV1130').addEventListener('click',async()=>{
+        const yes=await appConfirmV1130('남은 예약을 정리할까요?','삭제된 부스의 예약과 번호만 정리합니다.','정리');if(!yes)return;
+        const button=tools.querySelector('#cleanupOrphansV1130'),valid=festivals().flatMap(festival=>(festival.booths||[]).map(booth=>({festivalId:String(festival.id),boothId:String(booth.id)})));
+        button.disabled=true;try{const result=await window.baemoonFirebase.purgeOrphanedBooths(valid);await window.baemoonFirebase.getAdminStats({force:true});appToast(`정리 완료 · 예약 ${Number(result.deletedReservations||0)}건`)}catch(error){appToast(error.message||'정리에 실패했습니다.')}finally{button.disabled=false}
+      });
+      tools.querySelector('#resetTestReservationsV1130').addEventListener('click',async()=>{
+        const phrase=await appDialogV1130({title:'예약 초기화',message:'예약·번호·참여 기록을 삭제합니다.',confirmText:'초기화',input:true,placeholder:'초기화 입력'});
+        if(phrase===null)return;if(String(phrase).trim()!=='초기화')return appToast('“초기화”를 입력해주세요.');
+        const button=tools.querySelector('button');button.disabled=true;
+        try{await window.baemoonFirebase.resetTestReservationData({confirmation:'배문고 테스트 초기화',includeParticipations:true});await window.baemoonFirebase.getAdminStats({force:true});appToast('테스트 기록을 초기화했습니다.')}catch(error){appToast(error.message||'초기화에 실패했습니다.')}finally{button.disabled=false}
+      });
+    }
+  }
+  let queueSelectorLoadToken=0;
+  function ensureQueueTimeSelector(){
+    const modal=document.querySelector('#adminBoothReservationModal');
+    const list=document.querySelector('#adminBoothQueueList');
+    const entry=selectedAdminEntry();
+    if(!modal?.classList.contains('open')||!list||!entry)return;
+    const rawTimes=typeof normalizedBoothTimes==='function'?normalizedBoothTimes(entry.booth,entry.festival):[];
+    const times=(Array.isArray(rawTimes)&&rawTimes.length?rawTimes:['즉시 예약']).map(value=>String(value||'즉시 예약'));
+    const signature=`${entry.festival.id}:${entry.booth.id}:${times.join('|')}`;
+    let wrap=document.querySelector('#adminQueueTimeWrapV1131');
+    if(!wrap){
+      wrap=document.createElement('label');wrap.id='adminQueueTimeWrapV1131';wrap.className='admin-queue-time-v1129';
+      wrap.innerHTML='<span>예약 시간</span><select id="adminQueueTimeV1129" aria-label="관리할 예약 시간"></select>';
+      list.parentElement?.insertBefore(wrap,list);
+      wrap.querySelector('select')?.addEventListener('change',event=>{
+        const value=String(event.currentTarget.value||'즉시 예약');
+        const token=++queueSelectorLoadToken;
+        loadQueueTime(value).finally(()=>{if(token===queueSelectorLoadToken)event.currentTarget.blur()});
+      });
+    }
+    const select=wrap.querySelector('select');if(!select)return;
+    if(wrap.dataset.signature===signature)return;
+    const previous=times.includes(select.value)?select.value:times[0];
+    wrap.dataset.signature=signature;
+    select.replaceChildren(...times.map(time=>{const option=document.createElement('option');option.value=time;option.textContent=time==='즉시 예약'?'즉시 예약':String(time).replace('T',' ');return option}));
+    select.value=previous;
+  }
+  function selectedQueueTime(){return document.querySelector('#adminQueueTimeV1129')?.value||'즉시 예약'}
+  async function loadQueueTime(time){
+    const entry=selectedAdminEntry();if(!entry)return;
+    try{
+      const overview=await window.baemoonFirebase.getAdminBoothOverview({festivalId:entry.festival.id,boothId:entry.booth.id,time,force:true});
+      const others=(window.firebaseCache.reservations||[]).filter(item=>!(item.festivalId===entry.festival.id&&item.boothId===entry.booth.id));window.firebaseCache.reservations=[...others,...overview.reservations];window.firebaseCache.queueEntries=overview.queue;
+      window.baemoonApp?.renderAdminBoothQueue?.(entry.festival.id,entry.booth.id,time);setTimeout(enhanceQueueRows,0);
+    }catch(error){appToast(error.message||'번호 목록을 불러오지 못했습니다.')}
+  }
+  function enhanceQueueRows(){
+    const entry=selectedAdminEntry();
+    const time=selectedQueueTime();
+    const entries=(window.firebaseCache.queueEntries||[]).filter(item=>
+      ['waiting','called'].includes(item.status)
+      && (!entry||(item.festivalId===entry.festival.id&&item.boothId===entry.booth.id))
+      && String(item.time||'즉시 예약')===String(time||'즉시 예약')
+    ).sort((a,b)=>Number(a.queueNumber||0)-Number(b.queueNumber||0));
+    document.querySelectorAll('#adminBoothQueueList article').forEach((article,index)=>{
+      const item=entries[index];if(!item)return;
+      const span=article.querySelector('span');if(span)span.textContent=item.status==='called'?`호출됨 · 대기번호 ${item.queueNumber}번 · ${Number(item.callCount||item.call_count||1)}/3`:`호출 전 · 대기번호 ${item.queueNumber}번`;
+      const rowCall=article.querySelector('[data-call-queue]');if(rowCall)rowCall.remove();
+      const check=article.querySelector('[data-queue-checkin]');
+      if(check){check.textContent=item.status==='called'?'QR 확인':'호출 후 QR';check.disabled=item.status!=='called'}
+      if(item.status==='called'&&!article.querySelector('[data-skip-queue]')){const skip=document.createElement('button');skip.type='button';skip.dataset.skipQueue=item.id;skip.textContent='무응답 처리';check?.parentElement?.insertBefore(skip,check)}
+    });
+  }
+  document.addEventListener('click',async event=>{
+    const call=event.target.closest('#callNextQueueButton');
+    if(call){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();const entry=selectedAdminEntry();if(!entry)return;call.disabled=true;try{const time=selectedQueueTime();const result=await window.baemoonFirebase.callNextQueue({festivalId:entry.festival.id,boothId:entry.booth.id,time});if(!result.queue)return appToast('호출할 번호가 없습니다.');if(result.limitReached)return appToast('최대 3회 호출했습니다.');await loadQueueTime(time);appToast(`대기번호 ${Number(result.queue.queue_number||result.queue.queueNumber||0)}번을 실제 호출했습니다 · ${Number(result.callCount||1)}/3`)}catch(error){appToast(error.message||'호출에 실패했습니다.')}finally{call.disabled=false}return}
+    const skip=event.target.closest('[data-skip-queue]');
+    if(skip){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();skip.disabled=true;try{await window.baemoonFirebase.skipQueueEntry(skip.dataset.skipQueue);await loadQueueTime(selectedQueueTime());await window.baemoonFirebase.getAdminStats({force:true});appToast('무응답 번호를 처리했습니다. 해당 예약은 활성 목록에서 제외됩니다.')}catch(error){appToast(error.message||'무응답 처리에 실패했습니다.')}finally{skip.disabled=false}return}
+    const qr=event.target.closest('[data-queue-checkin]');
+    if(qr){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();const article=qr.closest('article');if(!article?.classList.contains('called'))return appToast('먼저 번호를 호출해주세요.');document.querySelector('#manualQrCodeInput').value='';document.querySelector('#qrCheckInResult').textContent='호출된 예약자의 QR을 스캔하세요.';window.baemoonApp?.openOverlay?.('qrScannerModal')}
+  },true);
+
+  async function enhanceMyQueue(force=false){
+    const cards=[...document.querySelectorAll('#myQueueList .my-queue-card')];if(!cards.length)return;
+    if(!force&&myQueueLoadedAt&&Date.now()-myQueueLoadedAt<10000)return;
+    try{
+      const result=await window.baemoonFirebase.getMyQueueStatus();const entries=(result.queue||[]).map(normalizeQueue);
+      cards.forEach((card,index)=>{
+        const queueId=card.querySelector('[data-cancel-queue]')?.dataset.cancelQueue||'';
+        const item=entries.find(entry=>entry.id===queueId)||entries[index];if(!item)return;
+        const span=card.querySelector('span');const time=String(item.time||'즉시 예약').replace('T',' ');
+        if(span)span.textContent=item.status==='called'?`호출됨 · 대기번호 ${Number(item.queueNumber||0)}번 · ${time}`:`호출 전 · 대기번호 ${Number(item.queueNumber||0)}번 · 앞에 ${Number(item.aheadCount||0)}팀 · ${time}`;
+      });
+      myQueueLoadedAt=Date.now();
+    }catch{}
+  }
+
+  async function renderParticipationPanel(force=false){
+    if(window.baemoonApp?.session?.()?.role!=='admin')return;
+    const ranking=document.querySelector('#adminBoothRanking');if(!ranking)return;
+    if(participationLoading)return;
+    if(!force&&participationLoadedAt&&Date.now()-participationLoadedAt<30000)return;
+    let section=document.querySelector('#adminParticipationHistoryV1129');
+    if(!section){section=document.createElement('section');section.id='adminParticipationHistoryV1129';section.className='admin-participation-v1129';section.innerHTML='<div class="admin-participation-head"><div><b>부스 참여 현황</b><small>체크인 완료 기록</small></div><button type="button" id="refreshParticipationsV1129">새로고침</button></div><div id="participationListV1129" class="participation-list-v1129"><div class="admin-empty">불러오는 중…</div></div>';ranking.parentElement?.insertAdjacentElement('afterend',section);section.querySelector('#refreshParticipationsV1129').addEventListener('click',()=>renderParticipationPanel(true))}
+    const list=section.querySelector('#participationListV1129');
+    participationLoading=true;
+    if(force)list.innerHTML='<div class="admin-empty">새로 불러오는 중…</div>';
+    try{
+      const payload=await window.baemoonFirebase.getParticipations({limit:1000});const items=payload.participations||[];
+      const groups=new Map();for(const item of items){const key=`${item.festival_id}:${item.booth_id}`;const group=groups.get(key)||{festival:item.festival_name,booth:item.booth_name,people:0,teams:0,latest:0,visitors:[]};group.people+=Math.max(1,Number(item.group_size||1));group.teams++;group.latest=Math.max(group.latest,Number(item.checked_in_at||0));if(group.visitors.length<8)group.visitors.push(`${item.display_name||'참여자'}${item.participant_role==='guest'?` #${item.guest_code||'0000'}`:''}`);groups.set(key,group)}
+      const sorted=[...groups.values()].sort((a,b)=>b.people-a.people);
+      list.innerHTML=sorted.length?sorted.map(group=>`<article><div><b>${htmlEsc(group.booth||'부스')}</b><small>${htmlEsc(group.festival||'행사')} · ${group.teams}팀 · 최근 ${new Date(group.latest).toLocaleString('ko-KR')}</small><p>${htmlEsc(group.visitors.join(' · '))}${group.teams>group.visitors.length?' 외':''}</p></div><strong>${group.people}명</strong></article>`).join(''):'<div class="admin-empty">아직 QR 체크인을 완료한 참여자가 없습니다.</div>';
+      participationLoadedAt=Date.now();
+    }catch(error){list.innerHTML=`<div class="admin-empty">${htmlEsc(error.message||'참여 현황을 불러오지 못했습니다.')}</div>`}
+    finally{participationLoading=false}
+  }
+
+  function ensureQrGuides(){
+    const student=document.querySelector('#reservationQrModal .modal-card');if(student&&!student.querySelector('.qr-guide-v1129')){const p=document.createElement('p');p.className='qr-guide-v1129';p.textContent='호출 후 이 QR을 보여주세요.';student.querySelector('h2')?.insertAdjacentElement('afterend',p)}
+    const admin=document.querySelector('#qrScannerModal .modal-card');if(admin&&!admin.querySelector('.qr-guide-v1129')){const p=document.createElement('p');p.className='qr-guide-v1129';p.textContent='호출된 예약자의 QR을 확인하세요.';admin.querySelector('h2')?.insertAdjacentElement('afterend',p)}
+  }
+  function installBannerBehavior(){
+    document.addEventListener('click',event=>{const action=event.target.closest('#homeHeroAction');if(!action)return;event.preventDefault();event.stopPropagation();window.__openHomeBannerDetailV1201?.()},true);
+  }
+  function patchVersionLabels(){
+    if(versionPatched)return;
+    const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+    let node;while((node=walker.nextNode())){if(node.nodeValue?.trim()==='v11.27')node.nodeValue=node.nodeValue.replace('v11.27','v11.42')}
+    document.documentElement.dataset.baemoonVersion=VERSION;
+    versionPatched=true;
+  }
+  function observeUi(){
+    let scheduled=false;
+    const run=()=>{
+      scheduled=false;ensureCapacityHelp();ensureQueueGuide();ensureAdminUtilityButtons();ensureQrGuides();patchVersionLabels();
+      const autoQueue=document.querySelector('#joinBoothQueueButton[data-action="auto"]');if(autoQueue)autoQueue.hidden=true;
+      if(document.querySelector('#adminBoothReservationModal.open')){ensureQueueTimeSelector();enhanceQueueRows()}
+      if(document.querySelector('#myQueueList .my-queue-card'))enhanceMyQueue();
+      if(document.querySelector('#adminBoothRanking'))renderParticipationPanel();
+    };
+    let observing=false;
+    const options={subtree:true,childList:true,attributes:true,attributeFilter:['class','hidden','data-action']};
+    const observer=new MutationObserver(()=>{if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{observer.disconnect();observing=false;try{run()}finally{observer.observe(document.body,options);observing=true}})});
+    observer.observe(document.body,options);observing=true;
+    observer.disconnect();observing=false;try{run()}finally{observer.observe(document.body,options);observing=true}
+  }
+
+  (async()=>{
+    try{
+      await waitForRuntime();installApiExtensions();installBannerBehavior();observeUi();
+      const originalToggle=toggleNotify;
+      toggleNotify=async enabled=>{await originalToggle(enabled);await syncPushSubscriptionV1130(Boolean(enabled)).catch(()=>{})};
+      window.baemoonApp.toggleNotify=toggleNotify;
+      if(window.baemoonApp?.session?.()&&window.Notification?.permission==='granted')syncPushSubscriptionV1130(true).catch(()=>{});
+      console.info(`Baemoon school app v${VERSION} ready`);
+    }catch(error){console.error('v11.33 initialization failed:',error)}
+  })();
+})();
+
+/* ===== v11.34 mobile stability · reservation lock · concise participation ===== */
+(()=>{
+  const VERSION='11.34';
+  const ua=String(navigator.userAgent||'');
+  const isKakao=/KAKAOTALK/i.test(ua);
+  const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));
+  let syncBusy=false,syncTimer=0,scanTimer=0,scanBusy=false,lastSyncSignature='';
+
+  function stopCamera(){
+    clearTimeout(scanTimer);scanTimer=0;scanBusy=false;
+    try{state.qrScanActive=false}catch{}
+    try{state.qrScannerStream?.getTracks?.().forEach(track=>track.stop())}catch{}
+    try{state.qrScannerStream=null}catch{}
+    document.querySelectorAll('video').forEach(video=>{try{video.srcObject?.getTracks?.().forEach(track=>track.stop())}catch{}try{video.srcObject=null}catch{}});
+    const wrap=document.querySelector('#qrScannerVideoWrap');if(wrap)wrap.hidden=true;
+  }
+
+  function normalizeReservation(row={}){return {id:String(row.id||''),slotId:String(row.slot_key||row.slotId||''),festivalId:String(row.festival_id||row.festivalId||''),festivalName:String(row.festival_name||row.festivalName||''),boothId:String(row.booth_id||row.boothId||''),boothName:String(row.booth_name||row.boothName||''),time:String(row.time||'즉시 예약'),userUid:String(row.user_uid||row.userUid||''),participantRole:String(row.participant_role||row.participantRole||''),user:String(row.display_name||row.displayName||row.user||'예약자'),name:String(row.display_name||row.displayName||row.name||'예약자'),guestCode:String(row.guest_code||row.guestCode||''),groupSize:Number(row.group_size||row.groupSize||1),status:'confirmed',checkInCode:String(row.check_in_code||row.checkInCode||''),checkedIn:false,checkedInAt:null,createdAt:Number(row.created_at||row.createdAt||Date.now()),updatedAt:Number(row.updated_at||row.updatedAt||Date.now())}}
+  function normalizeQueue(row={}){return {id:String(row.id||''),slotId:String(row.slot_key||row.slotId||''),festivalId:String(row.festival_id||row.festivalId||''),festivalName:String(row.festival_name||row.festivalName||''),boothId:String(row.booth_id||row.boothId||''),boothName:String(row.booth_name||row.boothName||''),time:String(row.time||'즉시 예약'),userUid:String(row.user_uid||row.userUid||''),participantRole:String(row.participant_role||row.participantRole||''),displayName:String(row.display_name||row.displayName||'예약자'),guestCode:String(row.guest_code||row.guestCode||''),queueNumber:Number(row.queue_number||row.queueNumber||0),status:String(row.status||'waiting')==='called'?'called':'waiting',createdAt:Number(row.created_at||row.createdAt||Date.now()),calledAt:Number(row.called_at||row.calledAt||0)||null,aheadCount:Number(row.aheadCount||0),callCount:Number(row.call_count||row.callCount||0)}}
+
+  function closeReservationViews(){
+    ['reservationDetailModal','reservationQrModal','reservationModal'].forEach(id=>{try{closeOverlay(id)}catch{document.getElementById(id)?.classList.remove('open')}});
+    if(window.baemoonApp?.state)window.baemoonApp.state.currentReservationId=null;
+  }
+  function participationKey(item){return String(item?.id||item?.reservation_id||'')}
+  function participationForBooth(boothId){return (window.firebaseCache?.participations||[]).find(item=>String(item.booth_id||item.boothId||'')===String(boothId))}
+  function activeReservationForBooth(boothId){const current=window.baemoonApp?.session?.();return (window.firebaseCache?.reservations||[]).find(item=>String(item.boothId||item.booth_id||'')===String(boothId)&&(item.userUid===current?.uid||item.user_uid===current?.uid))}
+
+  async function syncMine({notify=true}={}){
+    const current=window.baemoonApp?.session?.();
+    if(!current?.uid||!['student','guest'].includes(current.role)||syncBusy||!window.baemoonFirebase?.getMyServerOverview)return;
+    syncBusy=true;
+    try{
+      const previous=(window.firebaseCache?.reservations||[]).map(item=>String(item.id));
+      const viewed=String(window.baemoonApp?.state?.currentReservationId||'');
+      const payload=await window.baemoonFirebase.getMyServerOverview();
+      const reservations=(payload.reservations||[]).map(normalizeReservation);
+      const queue=(payload.queue||[]).map(normalizeQueue);
+      const participations=Array.isArray(payload.participations)?payload.participations:[];
+      const signature=[reservations.map(x=>x.id).join(','),queue.map(x=>`${x.id}:${x.status}:${x.queueNumber}`).join(','),participations.map(participationKey).join(',')].join('|');
+      window.firebaseCache.reservations=reservations;
+      window.firebaseCache.queueEntries=queue;
+      window.firebaseCache.participations=participations;
+      window.baemoonApp?.handleQueueEntries?.(queue);
+      window.baemoonApp?.renderHomeReservations?.();window.baemoonApp?.renderMy?.();
+      if(viewed&&!reservations.some(item=>item.id===viewed)){
+        const completed=participations.find(item=>String(item.reservation_id||'')===viewed);
+        closeReservationViews();
+        if(completed&&notify){
+          const key=`bm-checkin-shown-v1134-${current.uid}-${participationKey(completed)}`;
+          if(!sessionStorage.getItem(key)){
+            sessionStorage.setItem(key,'1');
+            await (window.__bmAppAlertV1130?window.__bmAppAlertV1130('체크인이 완료되었습니다',`${completed.booth_name||'부스'} 예약이 완료 처리되었습니다.`):Promise.resolve());
+          }
+        }
+      }
+      if(previous.length&&reservations.length<previous.length)closeReservationViews();
+      lastSyncSignature=signature;
+    }catch(error){console.warn('v11.34 sync failed',error)}finally{syncBusy=false}
+  }
+  function scheduleSync(delay){clearTimeout(syncTimer);syncTimer=setTimeout(async()=>{if(!document.hidden)await syncMine();const fast=document.querySelector('#reservationDetailModal.open,#reservationQrModal.open')||window.baemoonApp?.state?.screen==='my';scheduleSync(fast?700:30000)},delay)}
+
+  const baseOpenReservation=openReservation;
+  openReservation=function(boothId){
+    const active=activeReservationForBooth(boothId);
+    if(active){
+      (window.__bmAppAlertV1130?window.__bmAppAlertV1130('이미 예약된 부스입니다.','MY에서 예약 시간과 QR을 확인할 수 있습니다.'):Promise.resolve());
+      return;
+    }
+    const completed=participationForBooth(boothId);
+    if(completed){
+      (window.__bmAppAlertV1130?window.__bmAppAlertV1130('이미 참여한 부스입니다.','체크인 완료 후에는 다시 예약할 수 없습니다.'):Promise.resolve());
+      return;
+    }
+    return baseOpenReservation(boothId);
+  };
+
+  function updateDetailsToggle(details){const label=details.querySelector('summary i');if(label)label.textContent=details.open?'닫기':'열기'}
+  function installDetailsToggles(){document.querySelectorAll('details.admin-inline-editor').forEach(details=>{if(details.dataset.toggleV1134)return;details.dataset.toggleV1134='1';updateDetailsToggle(details);details.addEventListener('toggle',()=>updateDetailsToggle(details))})}
+
+  function manualQrOnly(){
+    const input=document.querySelector('#manualQrCodeInput'),button=document.querySelector('#confirmQrCheckInButton');
+    if(input&&!input.closest('details')&&button){const label=input.closest('label');if(label){const details=document.createElement('details');details.className='manual-qr-fallback-v1134';const summary=document.createElement('summary');summary.textContent='카메라가 안 될 때 코드 직접 입력';label.parentElement.insertBefore(details,label);details.append(summary,label,button)}}
+    if(isKakao){const subtitle=document.querySelector('#qrScannerModal .modal-subtitle');if(subtitle)subtitle.textContent='카메라 권한을 허용하면 카카오톡 안에서도 QR 스캔을 시도합니다. 안 될 때만 코드를 직접 입력해주세요.'}
+  }
+
+  async function startSafeScanner(){
+    stopCamera();manualQrOnly();
+    if(!('BarcodeDetector'in window)){document.querySelector('.manual-qr-fallback-v1134')?.setAttribute('open','');toast('이 브라우저에서는 코드를 직접 입력해주세요.');return}
+    try{
+      if(!navigator.mediaDevices?.getUserMedia)throw new Error('camera-not-supported');
+      try{if(navigator.permissions?.query)await navigator.permissions.query({name:'camera'}).catch(()=>null)}catch{}
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:640,max:1280},height:{ideal:480,max:720}},audio:false});
+      state.qrScannerStream=stream;state.qrScanActive=true;
+      const video=document.querySelector('#qrScannerVideo');video.srcObject=stream;await video.play();document.querySelector('#qrScannerVideoWrap').hidden=false;
+      const detector=new BarcodeDetector({formats:['qr_code']});
+      const tick=async()=>{
+        if(!state.qrScanActive||scanBusy)return;
+        scanBusy=true;
+        try{const codes=video.readyState>=2?await detector.detect(video):[];if(codes[0]?.rawValue){const value=codes[0].rawValue;stopCamera();await processQrCheckIn(value);return}}catch(error){console.warn('QR scan frame failed',error)}finally{scanBusy=false}
+        if(state.qrScanActive)scanTimer=setTimeout(tick,320);
+      };
+      scanTimer=setTimeout(tick,200);
+    }catch(error){stopCamera();document.querySelector('.manual-qr-fallback-v1134')?.setAttribute('open','');const kakaoHint=isKakao?' 카카오톡 설정에서 카메라 권한을 허용하거나, 우측 상단 메뉴에서 외부 브라우저로 열어주세요.':'';toast('카메라를 열 수 없습니다.'+kakaoHint+' 코드를 직접 입력할 수도 있습니다.')}
+  }
+
+  document.addEventListener('click',event=>{
+    const start=event.target.closest('#startQrScannerButton');
+    if(start){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();startSafeScanner();return}
+    if(event.target.closest('#openQrScannerButton,[data-queue-checkin]'))setTimeout(manualQrOnly,0);
+  },true);
+  document.addEventListener('click',event=>{if(event.target.closest('[data-close="qrScannerModal"]'))stopCamera()},true);
+  document.querySelector('#qrScannerModal')?.addEventListener('click',event=>{if(event.target===event.currentTarget)stopCamera()});
+  window.addEventListener('pagehide',stopCamera);window.addEventListener('beforeunload',stopCamera);
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCamera();else syncMine()});
+
+  function parseStudent(displayName,role){
+    const text=String(displayName||'참여자').trim();
+    if(role==='guest')return {studentId:'게스트',name:text.replace(/\s*#\d{4}\s*$/,'')||'게스트'};
+    const match=text.match(/^(\d{4,6})\s+(.+)$/);return match?{studentId:match[1],name:match[2]}:{studentId:'-',name:text};
+  }
+  const clock=value=>new Intl.DateTimeFormat('ko-KR',{hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(Number(value||Date.now())));
+  function ensureParticipationDetail(){let overlay=document.querySelector('#participationDetailV1134');if(overlay)return overlay;overlay=document.createElement('div');overlay.id='participationDetailV1134';overlay.className='participation-detail-v1134';overlay.hidden=true;overlay.innerHTML='<section role="dialog" aria-modal="true"><header><div><h2 id="participationDetailTitleV1134">참여자 확인</h2><p id="participationDetailSummaryV1134"></p></div><button type="button" aria-label="닫기">×</button></header><div id="participationDetailListV1134" class="participation-detail-list-v1134"></div></section>';overlay.querySelector('header button').addEventListener('click',()=>overlay.hidden=true);overlay.addEventListener('click',event=>{if(event.target===overlay)overlay.hidden=true});document.body.append(overlay);return overlay}
+  async function openParticipationDetail(article){
+    const booth=article.querySelector('b')?.textContent?.trim()||'부스';const festival=(article.querySelector('small')?.textContent||'').split('·')[0].trim();const overlay=ensureParticipationDetail(),list=overlay.querySelector('#participationDetailListV1134');overlay.querySelector('#participationDetailTitleV1134').textContent=booth+' 참여자';overlay.querySelector('#participationDetailSummaryV1134').textContent='불러오는 중';list.innerHTML='<div class="admin-empty">불러오는 중…</div>';overlay.hidden=false;
+    try{const payload=await window.baemoonFirebase.getParticipations({limit:1000});const rows=(payload.participations||[]).filter(row=>String(row.booth_name||'')===booth&&(!festival||String(row.festival_name||'')===festival)).sort((a,b)=>Number(b.checked_in_at||0)-Number(a.checked_in_at||0));const people=rows.reduce((sum,row)=>sum+Math.max(1,Number(row.group_size||1)),0);overlay.querySelector('#participationDetailSummaryV1134').textContent=`${rows.length}팀 · ${people}명`;list.innerHTML=rows.length?rows.map(row=>{const person=parseStudent(row.display_name,row.participant_role);return `<article><div><span>학번</span><b>${esc(person.studentId)}</b></div><div><span>이름</span><b>${esc(person.name)}</b></div><div><span>명수</span><b>${Math.max(1,Number(row.group_size||1))}명</b></div><div><span>시간</span><b>${esc(clock(row.checked_in_at))}</b></div></article>`}).join(''):'<div class="admin-empty">참여 기록이 없습니다.</div>'}catch(error){list.innerHTML=`<div class="admin-empty">${esc(error.message||'참여자를 불러오지 못했습니다.')}</div>`}
+  }
+  document.addEventListener('click',event=>{const article=event.target.closest('#adminParticipationHistoryV1129 article');if(!article)return;event.preventDefault();openParticipationDetail(article)});
+
+  async function waitReady(){for(let i=0;i<160;i++){if(window.__firebaseRuntimeReady&&window.baemoonFirebase&&window.baemoonApp)return true;await sleep(100)}return false}
+  (async()=>{if(!await waitReady())return;installDetailsToggles();manualQrOnly();await syncMine({notify:false});scheduleSync(800);window.addEventListener('focus',()=>syncMine());window.addEventListener('online',()=>syncMine());console.info('Baemoon v11.35 ready')})();
+  document.documentElement.dataset.baemoonVersion=VERSION;
+})();
+
+
+/* ===== v11.35 fresh login · device consent · reservation errors · festival flow ===== */
+(()=>{
+  const VERSION='11.35';
+  const DEVICE_CONSENT_KEY='bm_privacy_consent_device_v2';
+  const CONSENT_COOKIE='bm_privacy_consent_device';
+
+  function readConsentCookie(){
+    const prefix=CONSENT_COOKIE+'=';
+    const found=document.cookie.split(';').map(value=>value.trim()).find(value=>value.startsWith(prefix));
+    return found?decodeURIComponent(found.slice(prefix.length)):'';
+  }
+  function writeConsentEverywhere(record){
+    try{
+      localStorage.setItem('bm_privacy_consent_v1',JSON.stringify(record));
+      localStorage.setItem(DEVICE_CONSENT_KEY,JSON.stringify(record));
+    }catch{}
+    try{document.cookie=`${CONSENT_COOKIE}=${encodeURIComponent(record.version||PRIVACY_CONSENT_VERSION)}; Max-Age=63072000; Path=/; SameSite=Lax; Secure`}catch{}
+  }
+  const privacyConsentRecordV1135Base=privacyConsentRecord;
+  privacyConsentRecord=function(){
+    let record=null;
+    try{record=JSON.parse(localStorage.getItem(DEVICE_CONSENT_KEY)||'null')}catch{}
+    if(!record)record=privacyConsentRecordV1135Base();
+    if(record?.required===true&&record?.service===true){writeConsentEverywhere(record);return record}
+    if(readConsentCookie()===PRIVACY_CONSENT_VERSION){
+      record={version:PRIVACY_CONSENT_VERSION,required:true,service:true,acceptedAt:0,deviceStored:true};
+      writeConsentEverywhere(record);return record;
+    }
+    return null;
+  };
+  hasPrivacyConsent=function(){
+    const record=privacyConsentRecord();
+    return record?.version===PRIVACY_CONSENT_VERSION&&record?.required===true&&record?.service===true;
+  };
+  document.querySelector('#acceptPrivacyConsent')?.addEventListener('click',()=>{
+    if(!document.querySelector('#privacyRequiredConsent')?.checked||!document.querySelector('#privacyServiceConsent')?.checked)return;
+    setTimeout(()=>{
+      const record=privacyConsentRecordV1135Base()||{version:PRIVACY_CONSENT_VERSION,required:true,service:true,acceptedAt:Date.now()};
+      writeConsentEverywhere(record);
+    },0);
+  });
+  if(hasPrivacyConsent())writeConsentEverywhere(privacyConsentRecord());
+
+  function applyFestivalWordsV1135(){
+    const hero=document.querySelector('.festival-hub-hero h1');
+    if(hero&&hero.innerHTML!=='배문고등학교<br>행사')hero.innerHTML='배문고등학교<br>행사';
+    const heading=document.querySelector('.festival-hub-heading h2');
+    if(heading&&heading.textContent!=='행사')heading.textContent='행사';
+  }
+  const renderFestivalHubV1135Base=renderFestivalHub;
+  renderFestivalHub=function(){renderFestivalHubV1135Base();applyFestivalWordsV1135()};
+  applyFestivalWordsV1135();
+
+  const detailSelectors=['#festivalManager','#adminStatsSection','#reservationServerStatus','#adminStatsGrid','#adminBoothRanking','#adminReservationSection','#adminReservationList'];
+  function toggleFestivalDetailV1135(show){
+    detailSelectors.forEach(selector=>{const element=document.querySelector(selector);if(element)element.hidden=!show});
+  }
+  function ensureFestivalManagerActionsV1135(){
+    const head=document.querySelector('#festivalManager .festival-manager-head');
+    if(!head||head.querySelector('.festival-manager-actions-v1135'))return;
+    const row=document.createElement('div');row.className='festival-manager-actions-v1135';
+    row.innerHTML='<button type="button" id="festivalListBackV1135">행사 목록</button><button type="button" id="toggleFestivalVisibleV1135">공개 전환</button><button type="button" class="danger" id="deleteFestivalV1135">행사 삭제</button>';
+    const edit=document.querySelector('#editFestivalButton');if(edit)row.appendChild(edit);head.appendChild(row);
+    row.querySelector('#festivalListBackV1135').addEventListener('click',()=>{
+      state.managerFestivalId=null;toggleFestivalDetailV1135(false);renderFestivalAdminLandingV1135();
+      document.querySelector('#adminFestivalSection')?.scrollIntoView({behavior:'smooth',block:'start'});
+    });
+    row.querySelector('#toggleFestivalVisibleV1135').addEventListener('click',async()=>{
+      const current=festivals().find(item=>item.id===state.managerFestivalId);if(!current)return;
+      try{
+        await saveFestivals(festivals().map(item=>item.id===current.id?{...item,visible:!item.visible}:item));
+        renderAdmin();renderHome();toast(current.visible?'행사를 학생 화면에서 숨겼습니다.':'행사를 학생 화면에 공개했습니다.');
+      }catch(error){toast(firebaseFriendlyMessage(error))}
+    });
+    row.querySelector('#deleteFestivalV1135').addEventListener('click',async()=>{
+      const current=festivals().find(item=>item.id===state.managerFestivalId);if(!current)return;
+      const ok=window.__bmAppConfirmV1130?await window.__bmAppConfirmV1130('행사 삭제',`${current.name} 행사를 삭제합니다. 행사 안의 부스도 함께 사라집니다.`,'삭제'):confirm(`${current.name} 행사를 삭제할까요?`);
+      if(!ok)return;
+      try{
+        await saveFestivals(festivals().filter(item=>item.id!==current.id));state.managerFestivalId=null;
+        renderAdmin();renderHome();toast('행사를 삭제했습니다.');
+      }catch(error){toast(firebaseFriendlyMessage(error))}
+    });
+  }
+  function renderFestivalAdminLandingV1135(){
+    const list=document.querySelector('#adminFestivalList');if(!list)return;
+    const items=festivals();
+    list.innerHTML=items.length?items.map(f=>`<article class="admin-festival-card"><div><span class="notice-category">${f.visible?'공개':'숨김'}${f.featured?' · 대표':''}</span><h3>${esc(f.name)} ${esc(f.year)}</h3><p>${formatDate(f.start)||'날짜 미정'} · 부스 ${(f.booths||[]).length}개</p></div><div class="item-actions"><button type="button" data-enter-festival-v1135="${f.id}">행사 들어가기</button></div></article>`).join(''):'<div class="admin-empty">행사를 추가해주세요.</div>';
+    list.querySelectorAll('[data-enter-festival-v1135]').forEach(button=>button.addEventListener('click',()=>{
+      state.managerFestivalId=button.dataset.enterFestivalV1135;selectManagerFestival(state.managerFestivalId,true);
+      ensureFestivalManagerActionsV1135();toggleFestivalDetailV1135(true);
+    }));
+    const selected=items.some(item=>item.id===state.managerFestivalId);
+    toggleFestivalDetailV1135(selected);if(selected)ensureFestivalManagerActionsV1135();
+  }
+  const selectManagerFestivalV1135Base=selectManagerFestival;
+  selectManagerFestival=function(fid,scroll=true){selectManagerFestivalV1135Base(fid,scroll);ensureFestivalManagerActionsV1135();toggleFestivalDetailV1135(Boolean(fid))};
+  const renderAdminV1135Base=renderAdmin;
+  renderAdmin=function(){renderAdminV1135Base();renderFestivalAdminLandingV1135()};
+
+  function reservationFailureMessageV1135(error){
+    const code=String(error?.code||'');const message=String(error?.message||'');
+    const map={
+      'booking-not-open':'예약은 부스 운영 시작 전에도 가능합니다. 화면을 다시 연 뒤 시도해주세요.',
+      'booking-ended':'부스 운영 시간이 종료되어 예약할 수 없습니다.',
+      'slot-ended':'선택한 회차 시간이 이미 지났습니다. 다른 시간을 선택해주세요.',
+      'slot-full':'선택한 시간의 예약 인원이 모두 찼습니다. 다른 시간을 선택해주세요.',
+      'slot-not-found':'선택한 예약 시간이 서버에 등록되지 않았습니다. 관리자에게 예약 서버 동기화를 요청해주세요.',
+      'duplicate-booth-reservation':'이미 예약한 부스입니다. 내 예약에서 확인해주세요.',
+      'already-participated':'이미 참여한 부스이므로 다시 예약할 수 없습니다.',
+      'booking-closed':'현재 예약이 마감된 부스입니다.',
+      'invalid-group-size':message||'예약 인원을 다시 확인해주세요.'
+    };
+    return map[code]||message||'예약을 완료하지 못했습니다. 잠시 후 다시 시도해주세요.';
+  }
+  async function showReservationFailureV1135(message){
+    closeOverlay('reservationModal');
+    if(window.__bmAppAlertV1130)await window.__bmAppAlertV1130('예약할 수 없습니다',message);else toast(message);
+  }
+  document.addEventListener('click',async event=>{
+    const button=event.target.closest('#confirmReservation');if(!button)return;
+    event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();
+    const festival=selectedFestival();const booth=festival?.booths?.find(item=>item.id===state.reservationBoothId);
+    const user=document.querySelector('#reservationUser')?.value?.trim()||'';const selected=document.querySelector('#reservationTimeGrid .selected');
+    if(!festival||!booth||!user||!selected||selected.disabled){await showReservationFailureV1135('예약 가능한 시간과 예약자 정보를 다시 확인해주세요.');return}
+    const time=selected.dataset.time||'즉시 예약';const availability=slotAvailability(festival,booth,time);const groupSize=Number(document.querySelector('#reservationPartySize')?.value||0);
+    if(!Number.isInteger(groupSize)||groupSize<availability.minPeople||groupSize>availability.maxForCurrentUser){await showReservationFailureV1135(`예약 인원은 ${availability.minPeople}명 이상 ${Math.max(availability.minPeople,availability.maxForCurrentUser)}명 이하여야 합니다.`);return}
+    const acknowledged=window.__bmAppConfirmV1130
+      ?await window.__bmAppConfirmV1130('예약 전 확인','호출 무응답이 불이익이 있을 수 있습니다. 내용을 확인한 뒤 예약을 확정해주세요.','확인 후 예약')
+      :confirm('호출 무응답이 불이익이 있을 수 있습니다. 확인 후 예약하시겠습니까?');
+    if(!acknowledged)return;
+    const original=button.textContent;button.disabled=true;button.textContent='예약 확인 중…';
+    try{
+      const result=await createReservation({festivalId:festival.id,festivalName:festival.name,festivalStart:festival.start||'',boothId:booth.id,boothName:booth.name,location:booth.location||'',duration:Number(booth.duration||0),capacity:availability.capacity,minPeople:availability.minPeople,groupSize,user,time});
+      closeOverlay('reservationModal');const number=Number(result?.queue?.queueNumber||result?.queue?.queue_number||0);
+      const ahead=Math.max(0,number-1),duration=Math.max(1,Number(booth.duration||15)),waitMinutes=ahead*duration,expectedClock=new Date(Date.now()+waitMinutes*60000).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});const expected=time==='즉시 예약'?(ahead===0?'곧 참여 예정':`${expectedClock} 전후 예상 · 앞 ${ahead}팀`):`${formatReservationSlot(time)} 참여 예정`;
+      const message=number?`${booth.name} 예약 완료\n참여 예정 시간: ${expected}\n대기번호: ${number}번`:`${booth.name} 예약 완료\n참여 예정 시간: ${expected}\n대기번호는 내 대기번호에서 확인해주세요.`;
+      if(window.__bmAppAlertV1130)await window.__bmAppAlertV1130('예약이 확정되었습니다',message);else toast(message.replaceAll('\n',' · '));
+      await window.baemoonFirebase?.refreshReservationData?.().catch(()=>{});renderMy();renderHomeReservations();
+    }catch(error){await showReservationFailureV1135(reservationFailureMessageV1135(error))}
+    finally{button.disabled=false;button.textContent=original||'예약 확정'}
+  },true);
+
+  function updateResetWordsV1135(){const button=document.querySelector('#resetTestReservationsV1130');if(button&&button.textContent!=='예약 초기화')button.textContent='예약 초기화'}
+  let wordsObserverQueuedV1141=false;
+  const runWordsObserverV1141=()=>{
+    wordsObserverQueuedV1141=false;
+    applyFestivalWordsV1135();
+    updateResetWordsV1135();
+  };
+  const observer=new MutationObserver(()=>{
+    if(wordsObserverQueuedV1141)return;
+    wordsObserverQueuedV1141=true;
+    requestAnimationFrame(runWordsObserverV1141);
+  });
+  observer.observe(document.body,{childList:true,subtree:true});
+  runWordsObserverV1141();
+  document.documentElement.dataset.baemoonVersion=VERSION;
+  console.info('Baemoon v11.35 ready');
+})();
+
+/* ===== v11.36 continuous festival · participation cleanup · reviews · request optimization ===== */
+(()=>{
+  const VERSION='11.36';
+  const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  const escV=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));
+  const fmtTime=value=>{const date=new Date(Number(value||0));return Number.isFinite(date.getTime())?new Intl.DateTimeFormat('ko-KR',{hour:'2-digit',minute:'2-digit',hour12:false}).format(date):'-'};
+  let apiReady=false;
+  let participationCache={at:0,key:'',data:null,promise:null};
+  let adminReviewCache={at:0,data:null,promise:null};
+  let overviewCache={at:0,data:null,promise:null};
+
+  async function waitReady(){
+    for(let i=0;i<180;i++){
+      if(window.__firebaseRuntimeReady&&window.baemoonFirebase&&window.baemoonApp)return true;
+      await sleep(100);
+    }
+    return false;
+  }
+  async function apiRequestV1136(path,{method='GET',body}={}){
+    const [{getApp},{getAuth}]=await Promise.all([
+      import('https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js'),
+      import('https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js')
+    ]);
+    const user=getAuth(getApp()).currentUser;
+    if(!user)throw new Error('로그인이 필요합니다.');
+    const token=await user.getIdToken(false);
+    const response=await fetch(`https://baemoon-reservation-server.timon20091220.workers.dev${path}`,{
+      method,cache:'no-store',headers:{Authorization:`Bearer ${token}`,Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)
+    });
+    let payload={};try{payload=await response.json()}catch{}
+    if(!response.ok||payload?.ok===false){const error=new Error(payload?.error?.message||`예약 서버 오류 (${response.status})`);error.code=payload?.error?.code||`api-${response.status}`;throw error}
+    return payload;
+  }
+
+  function installApiV1136(){
+    if(apiReady||!window.baemoonFirebase)return;apiReady=true;
+    const api=window.baemoonFirebase;
+    const baseOverview=api.getMyServerOverview?.bind(api);
+    if(baseOverview){
+      api.getMyServerOverview=async({force=false}={})=>{
+        const now=Date.now();
+        if(!force&&overviewCache.data&&now-overviewCache.at<700)return overviewCache.data;
+        if(overviewCache.promise)return overviewCache.promise;
+        overviewCache.promise=baseOverview().then(result=>{
+          overviewCache={at:Date.now(),data:result,promise:null};
+          window.firebaseCache.reviews=Array.isArray(result?.reviews)?result.reviews:[];
+          return result;
+        }).finally(()=>{overviewCache.promise=null});
+        return overviewCache.promise;
+      };
+    }
+    const baseParticipations=api.getParticipations?.bind(api);
+    if(baseParticipations){
+      api.getParticipations=(filters={})=>{
+        const clean={...filters};const force=Boolean(clean.force);delete clean.force;
+        const key=JSON.stringify(clean);const now=Date.now();
+        if(!force&&participationCache.data&&participationCache.key===key&&now-participationCache.at<30000)return Promise.resolve(participationCache.data);
+        if(!force&&participationCache.promise&&participationCache.key===key)return participationCache.promise;
+        participationCache.key=key;
+        participationCache.promise=baseParticipations(clean).then(result=>{participationCache={at:Date.now(),key,data:result,promise:null};return result}).finally(()=>{participationCache.promise=null});
+        return participationCache.promise;
+      };
+    }
+    const baseSlot=api.getSlotStatus?.bind(api);const slotCache=new Map();
+    if(baseSlot){
+      api.getSlotStatus=payload=>{
+        const key=JSON.stringify(payload||{}),cached=slotCache.get(key),now=Date.now();
+        if(cached&&now-cached.at<10000)return Promise.resolve(cached.data);
+        return baseSlot(payload).then(data=>{slotCache.set(key,{at:Date.now(),data});return data});
+      };
+    }
+    api.purgeParticipations=filters=>apiRequestV1136('/api/admin/participations/purge',{method:'POST',body:filters});
+    api.saveMyReview=payload=>apiRequestV1136('/api/me/review',{method:'POST',body:payload});
+    api.getAdminReviews=({force=false}={})=>{
+      const now=Date.now();
+      if(!force&&adminReviewCache.data&&now-adminReviewCache.at<60000)return Promise.resolve(adminReviewCache.data);
+      if(!force&&adminReviewCache.promise)return adminReviewCache.promise;
+      adminReviewCache.promise=apiRequestV1136('/api/admin/reviews').then(data=>{adminReviewCache={at:Date.now(),data,promise:null};return data}).finally(()=>{adminReviewCache.promise=null});
+      return adminReviewCache.promise;
+    };
+    api.deleteAdminReview=id=>apiRequestV1136('/api/admin/reviews/delete',{method:'POST',body:{id}});
+  }
+
+  function enhanceHomeFestivalCards(){
+    document.querySelectorAll('#festivalHomeList [data-open-festival]').forEach(card=>{
+      if(!card.querySelector('.festival-detail-link-v1136'))card.insertAdjacentHTML('beforeend','<span class="festival-detail-link-v1136">상세 보기 →</span>');
+      card.setAttribute('aria-label',`${card.querySelector('h3')?.textContent||'행사'} 상세 보기`);
+    });
+  }
+
+  const sectionIds={overview:'festivalSectionOverviewV1136',reserve:'festivalSectionReserveV1136',food:'festivalSectionFoodV1136',events:'festivalSectionEventsV1136'};
+  function prepareContinuousFestival(){
+    const screen=document.querySelector('[data-screen="festival"]');if(!screen)return;
+    const stats=screen.querySelector('.festival-overview-stats');if(stats)stats.hidden=true;
+    screen.querySelectorAll('.festival-panel').forEach(panel=>{
+      panel.classList.add('active','festival-flow-panel-v1136');panel.hidden=false;
+      const key=panel.dataset.panel;if(sectionIds[key])panel.id=sectionIds[key];
+    });
+    const tabs=screen.querySelector('#festivalTabs');if(!tabs||tabs.dataset.flowBound==='1')return;
+    tabs.dataset.flowBound='1';
+    tabs.addEventListener('click',event=>{
+      const button=event.target.closest('button[data-tab]');if(!button)return;
+      event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();
+      tabs.querySelectorAll('button').forEach(item=>item.classList.toggle('active',item===button));
+      document.getElementById(sectionIds[button.dataset.tab])?.scrollIntoView({behavior:'smooth',block:'start'});
+    },true);
+  }
+
+  const adminDetailIds=['festivalManager','adminStatsSection','reservationServerStatus','adminStatsGrid','adminBoothRanking','adminParticipationHistoryV1129','adminReservationSection','adminReservationList'];
+  function ensureFestivalAdminDetail(){
+    const screen=document.querySelector('[data-screen="festival"]');if(!screen)return null;
+    let wrap=document.querySelector('#festivalAdminDetailV1136');
+    if(!wrap){wrap=document.createElement('section');wrap.id='festivalAdminDetailV1136';wrap.className='festival-admin-detail-v1136';wrap.innerHTML='<div class="section-heading"><div><p class="eyebrow dark">ADMIN</p><h2>행사 세부 관리</h2></div></div>';screen.append(wrap)}
+    adminDetailIds.forEach(id=>{const node=document.getElementById(id);if(node&&node.parentElement!==wrap)wrap.append(node)});
+    const participation=document.querySelector('#adminParticipationHistoryV1129');if(participation&&participation.parentElement!==wrap)wrap.append(participation);
+    wrap.hidden=window.baemoonApp?.session?.()?.role!=='admin';return wrap;
+  }
+  function applyFestivalHubAdminMode(){
+    const editor=document.querySelector('#festivalInlineAdminEditor');if(!editor)return;
+    const body=editor.querySelector('.admin-inline-editor-body');const section=document.querySelector('#adminFestivalSection');
+    if(body&&section){[...body.children].forEach(child=>child.hidden=child!==section);section.hidden=false}
+    const list=document.querySelector('#adminFestivalList');if(list)list.hidden=true;
+    const heading=section?.querySelector('h2');if(heading)heading.textContent='행사 추가';
+    const eyebrow=section?.querySelector('.eyebrow');if(eyebrow)eyebrow.textContent='FESTIVAL CREATE';
+    const button=document.querySelector('#addFestivalButton');if(button)button.textContent='행사 추가';
+  }
+  function openSelectedFestivalAdmin(){
+    if(window.baemoonApp?.session?.()?.role!=='admin')return;
+    const festival=typeof selectedFestival==='function'?selectedFestival():null;if(!festival)return;
+    try{state.managerFestivalId=festival.id;selectManagerFestival(festival.id,false)}catch{}
+    ensureFestivalAdminDetail();
+  }
+
+  function ensureParticipationDeleteButton(){
+    const section=document.querySelector('#adminParticipationHistoryV1129');if(!section)return;
+    const head=section.querySelector('.admin-participation-head');if(!head||head.querySelector('#deleteParticipationsV1136'))return;
+    const button=document.createElement('button');button.id='deleteParticipationsV1136';button.type='button';button.className='danger-outline-v1136';button.textContent='참여 기록 삭제';head.append(button);
+    button.addEventListener('click',async()=>{
+      const ok=window.__bmAppConfirmV1130?await window.__bmAppConfirmV1130('참여 기록 삭제','모든 부스 참여 기록과 작성된 후기를 삭제합니다. 이 작업은 되돌릴 수 없습니다.','삭제'):confirm('모든 참여 기록을 삭제할까요?');
+      if(!ok)return;button.disabled=true;
+      try{
+        const result=await window.baemoonFirebase.purgeParticipations({confirmation:'참여 기록 삭제'});
+        participationCache={at:0,key:'',data:null,promise:null};adminReviewCache={at:0,data:null,promise:null};
+        window.firebaseCache.participations=[];window.firebaseCache.reviews=[];
+        window.baemoonApp?.renderMy?.();window.baemoonApp?.renderAdminStats?.();
+        document.querySelector('#participationListV1129').innerHTML='<div class="admin-empty">참여 기록이 없습니다.</div>';
+        renderAdminReviews(true);
+        (window.baemoonApp?.toast||toast)(`참여 기록 ${Number(result.deletedParticipations||0)}건을 삭제했습니다.`);
+      }catch(error){(window.baemoonApp?.toast||toast)(error.message||'참여 기록 삭제에 실패했습니다.')}finally{button.disabled=false}
+    });
+  }
+
+  function ensureMyParticipationSection(){
+    let section=document.querySelector('#myParticipationSectionV1136');if(section)return section;
+    const anchor=document.querySelector('#myQueueList')||document.querySelector('#myReservationList');if(!anchor)return null;
+    section=document.createElement('section');section.id='myParticipationSectionV1136';section.className='my-participation-v1136';section.innerHTML='<div class="section-heading"><div><p class="eyebrow dark">MY EXPERIENCE</p><h2>참여한 부스</h2></div><span class="date-chip" id="myParticipationCountV1136">0건</span></div><div id="myParticipationListV1136" class="my-participation-list-v1136"></div>';
+    anchor.insertAdjacentElement('afterend',section);return section;
+  }
+  function reviewFor(participationId){return (window.firebaseCache?.reviews||[]).find(item=>String(item.participation_id||item.participationId||'')===String(participationId))}
+  function renderMyParticipations(){
+    const section=ensureMyParticipationSection();if(!section)return;
+    const current=window.baemoonApp?.session?.();const items=Array.isArray(window.firebaseCache?.participations)?window.firebaseCache.participations:[];
+    section.hidden=!current||!['student','guest'].includes(current.role);
+    const count=section.querySelector('#myParticipationCountV1136'),list=section.querySelector('#myParticipationListV1136');if(count)count.textContent=`${items.length}건`;
+    if(!list)return;
+    list.innerHTML=items.length?items.map(item=>{
+      const review=reviewFor(item.id);const canReview=current?.role==='student';
+      return `<article class="my-participation-card-v1136"><div><span>${escV(item.festival_name||'행사')} · ${escV(item.time||'즉시 예약')}</span><h3>${escV(item.booth_name||'부스')}</h3><p>${Math.max(1,Number(item.group_size||1))}명 참여 · ${escV(fmtTime(item.checked_in_at))}</p>${review?.review_text?`<blockquote>${escV(review.review_text)}</blockquote>`:''}</div>${canReview?`<button type="button" data-write-review-v1136="${escV(item.id)}">${review?'후기 수정':'후기 남기기'}</button>`:''}</article>`;
+    }).join(''):'<div class="festival-empty">아직 참여 완료된 부스가 없습니다.</div>';
+  }
+  function ensureReviewDialog(){
+    let overlay=document.querySelector('#reviewDialogV1136');if(overlay)return overlay;
+    overlay=document.createElement('div');overlay.id='reviewDialogV1136';overlay.className='review-dialog-v1136';overlay.hidden=true;overlay.innerHTML='<section role="dialog" aria-modal="true"><header><div><p class="eyebrow dark">REVIEW</p><h2>부스 후기</h2></div><button type="button" data-close-review-v1136>×</button></header><p id="reviewBoothV1136"></p><textarea id="reviewTextV1136" maxlength="300" placeholder="참여한 부스에 대한 후기를 남겨주세요. (300자 이내)"></textarea><div class="review-actions-v1136"><button type="button" data-close-review-v1136>취소</button><button type="button" id="saveReviewV1136">저장</button></div></section>';
+    overlay.querySelectorAll('[data-close-review-v1136]').forEach(button=>button.addEventListener('click',()=>overlay.hidden=true));overlay.addEventListener('click',event=>{if(event.target===overlay)overlay.hidden=true});document.body.append(overlay);return overlay;
+  }
+  function openReviewDialog(participationId){
+    const participation=(window.firebaseCache?.participations||[]).find(item=>String(item.id)===String(participationId));if(!participation)return;
+    const overlay=ensureReviewDialog();overlay.dataset.participationId=participationId;overlay.querySelector('#reviewBoothV1136').textContent=`${participation.booth_name||'부스'} · ${participation.festival_name||'행사'}`;overlay.querySelector('#reviewTextV1136').value=reviewFor(participationId)?.review_text||'';overlay.hidden=false;overlay.querySelector('#reviewTextV1136').focus();
+  }
+  async function saveReview(){
+    const overlay=ensureReviewDialog(),participationId=overlay.dataset.participationId,text=overlay.querySelector('#reviewTextV1136').value.trim(),button=overlay.querySelector('#saveReviewV1136');
+    if(text.length<2)return (window.baemoonApp?.toast||toast)('후기를 두 글자 이상 입력해주세요.');button.disabled=true;
+    try{const result=await window.baemoonFirebase.saveMyReview({participationId,review:text});const reviews=window.firebaseCache.reviews||(window.firebaseCache.reviews=[]);const index=reviews.findIndex(item=>String(item.participation_id||item.participationId)===String(participationId));if(index>=0)reviews[index]=result.review;else reviews.unshift(result.review);overlay.hidden=true;renderMyParticipations();adminReviewCache={at:0,data:null,promise:null};(window.baemoonApp?.toast||toast)('후기를 저장했습니다.')}catch(error){(window.baemoonApp?.toast||toast)(error.message||'후기를 저장하지 못했습니다.')}finally{button.disabled=false}
+  }
+
+  function ensureAdminReviewsSection(){
+    const wrap=ensureFestivalAdminDetail();if(!wrap)return null;
+    let section=document.querySelector('#adminReviewsV1136');if(section)return section;
+    section=document.createElement('section');section.id='adminReviewsV1136';section.className='admin-reviews-v1136';section.innerHTML='<div class="admin-participation-head"><div><b>학생 후기</b><small>참여 완료 학생이 남긴 후기</small></div><button type="button" id="refreshAdminReviewsV1136">새로고침</button></div><div id="adminReviewListV1136"><div class="admin-empty">후기를 불러오는 중…</div></div>';
+    wrap.append(section);section.querySelector('#refreshAdminReviewsV1136').addEventListener('click',()=>renderAdminReviews(true));return section;
+  }
+  async function renderAdminReviews(force=false){
+    if(window.baemoonApp?.session?.()?.role!=='admin')return;
+    const section=ensureAdminReviewsSection(),list=section?.querySelector('#adminReviewListV1136');if(!list)return;
+    if(force)list.innerHTML='<div class="admin-empty">후기를 새로 불러오는 중…</div>';
+    try{const payload=await window.baemoonFirebase.getAdminReviews({force});const items=payload.reviews||[];list.innerHTML=items.length?items.map(item=>`<article><div><span>${escV(item.booth_name||'부스')} · ${escV(item.festival_name||'행사')}</span><h3>${escV(item.display_name||'학생')}</h3><p>${escV(item.review_text||'')}</p><small>${escV(fmtTime(item.updated_at))}</small></div><button type="button" data-delete-review-v1136="${escV(item.id)}">삭제</button></article>`).join(''):'<div class="admin-empty">등록된 후기가 없습니다.</div>'}catch(error){list.innerHTML=`<div class="admin-empty">${escV(error.message||'후기를 불러오지 못했습니다.')}</div>`}
+  }
+
+  document.addEventListener('click',event=>{
+    const review=event.target.closest('[data-write-review-v1136]');if(review){event.preventDefault();openReviewDialog(review.dataset.writeReviewV1136);return}
+    const save=event.target.closest('#saveReviewV1136');if(save){event.preventDefault();saveReview();return}
+    const del=event.target.closest('[data-delete-review-v1136]');if(del){event.preventDefault();(async()=>{const ok=window.__bmAppConfirmV1130?await window.__bmAppConfirmV1130('후기 삭제','이 후기를 삭제할까요?','삭제'):confirm('후기를 삭제할까요?');if(!ok)return;del.disabled=true;try{await window.baemoonFirebase.deleteAdminReview(del.dataset.deleteReviewV1136);adminReviewCache={at:0,data:null,promise:null};await renderAdminReviews(true)}catch(error){(window.baemoonApp?.toast||toast)(error.message||'후기 삭제에 실패했습니다.')}finally{del.disabled=false}})();return}
+    if(event.target.closest('#refreshParticipationsV1129'))participationCache={at:0,key:'',data:null,promise:null};
+  },true);
+
+  const baseRenderHome=renderHome;
+  renderHome=function(){baseRenderHome();enhanceHomeFestivalCards()};
+  const baseRenderFestival=renderFestival;
+  renderFestival=function(){baseRenderFestival();prepareContinuousFestival();openSelectedFestivalAdmin();setTimeout(()=>{ensureParticipationDeleteButton();if(!window.__BAEMOON_FEATURES_1202__)renderAdminReviews(false)},0)};
+  const baseRenderFestivalHub=renderFestivalHub;
+  renderFestivalHub=function(){baseRenderFestivalHub();applyFestivalHubAdminMode()};
+  const baseRenderAdmin=renderAdmin;
+  renderAdmin=function(){baseRenderAdmin();applyFestivalHubAdminMode();if(window.baemoonApp?.state?.screen==='festival'){openSelectedFestivalAdmin();ensureParticipationDeleteButton();renderAdminReviews(false)}};
+  const baseRenderMy=renderMy;
+  renderMy=function(){baseRenderMy();if(window.__BAEMOON_FEATURES_1202__)window.__renderMyReviewsV1202?.();else renderMyParticipations()};
+  if(window.baemoonApp){Object.assign(window.baemoonApp,{renderHome,renderFestival,renderFestivalHub,renderAdmin,renderMy,renderMyParticipations})}
+
+  let featureObserverQueuedV1141=false;
+  let featureObserverRunningV1141=false;
+  const runFeatureObserverV1141=()=>{
+    featureObserverQueuedV1141=false;
+    if(featureObserverRunningV1141)return;
+    featureObserverRunningV1141=true;
+    try{
+      applyFestivalHubAdminMode();
+      prepareContinuousFestival();
+      enhanceHomeFestivalCards();
+      ensureParticipationDeleteButton();
+      if(window.baemoonApp?.state?.screen==='festival')ensureFestivalAdminDetail();
+    }finally{featureObserverRunningV1141=false}
+  };
+  const observer=new MutationObserver(()=>{
+    if(featureObserverQueuedV1141)return;
+    featureObserverQueuedV1141=true;
+    requestAnimationFrame(runFeatureObserverV1141);
+  });
+  observer.observe(document.body,{childList:true,subtree:true});
+
+  (async()=>{
+    if(!await waitReady())return;installApiV1136();
+    const api=window.baemoonFirebase;
+    const baseOverview=api.getMyServerOverview?.bind(api);
+    if(baseOverview&&!api.__reviewsBoundV1136){api.__reviewsBoundV1136=true;api.getMyServerOverview=async options=>{const result=await baseOverview(options);window.firebaseCache.reviews=Array.isArray(result?.reviews)?result.reviews:[];return result}}
+    prepareContinuousFestival();applyFestivalHubAdminMode();enhanceHomeFestivalCards();renderMyParticipations();
+    if(window.baemoonApp?.state?.screen==='festival'){openSelectedFestivalAdmin();ensureParticipationDeleteButton();renderAdminReviews(false)}
+    console.info('Baemoon v11.42 stable loader ready');
+  })();
+  document.documentElement.dataset.baemoonVersion=VERSION;
+})();
+
+
+;document.documentElement.dataset.baemoonLoader='static-body-v1142';
+
+
+/* ===== v11.42 performance · QR · compact UI · background notification ===== */
+(()=>{
+  'use strict';
+  if(window.__BAEMOON_FEATURES_1142__)return;
+  window.__BAEMOON_FEATURES_1142__=true;
+  const VERSION='11.42';
+  const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  const methodCaches=new Map();
+
+  function safeCopy(value){
+    const text=String(value||'').trim();
+    if(!text)return Promise.reject(new Error('복사할 코드가 없습니다.'));
+    if(navigator.clipboard?.writeText)return navigator.clipboard.writeText(text);
+    const area=document.createElement('textarea');area.value=text;area.style.position='fixed';area.style.opacity='0';document.body.append(area);area.select();
+    try{document.execCommand('copy');return Promise.resolve()}finally{area.remove()}
+  }
+  function enhanceStudentQr(){
+    const modal=document.querySelector('#reservationQrModal');const card=modal?.querySelector('.modal-card');if(!card)return;
+    card.classList.add('reservation-qr-card-v1142');
+    const image=document.querySelector('#reservationQrImage');if(image)image.setAttribute('alt','부스 체크인 QR 코드');
+    const code=document.querySelector('#reservationQrCodeText');if(code&&!document.querySelector('#copyReservationQrV1142')){
+      const row=document.createElement('div');row.className='reservation-qr-code-row-v1142';
+      const label=document.createElement('span');label.textContent='QR 인식이 안 되면 확인 코드를 보여주세요.';
+      const button=document.createElement('button');button.id='copyReservationQrV1142';button.type='button';button.textContent='코드 복사';
+      button.addEventListener('click',async()=>{try{await safeCopy(code.textContent);(window.baemoonApp?.toast||window.toast)?.('체크인 코드를 복사했습니다.')}catch{(window.baemoonApp?.toast||window.toast)?.('코드를 복사하지 못했습니다.')}});
+      code.insertAdjacentElement('afterend',row);row.append(label,button);
+    }
+    const guide=card.querySelector('.qr-guide-v1129');if(guide)guide.textContent='부스에서 호출되면 화면 밝기를 높이고 이 QR을 보여주세요.';
+  }
+  function hideBottomFestivalAdd(){
+    const editor=document.querySelector('#festivalInlineAdminEditor');if(!editor)return;
+    const detailScreen=document.querySelector('[data-screen="festival"].active');
+    const selected=Boolean(window.baemoonApp?.state?.managerFestivalId||window.baemoonApp?.selectedFestival?.());
+    const shouldHide=Boolean(detailScreen&&selected);
+    editor.classList.toggle('hide-on-festival-detail-v1142',shouldHide);
+    editor.setAttribute('aria-hidden',String(shouldHide));
+  }
+  function addPushUi(){
+    const description=document.querySelector('#notificationSettingDescription');if(!description||document.querySelector('#backgroundPushV1142'))return;
+    const box=document.createElement('section');box.id='backgroundPushV1142';box.className='background-push-v1142';
+    box.innerHTML='<div><b>사이트 밖 호출 알림</b><small id="backgroundPushStatusV1142">현재 상태를 확인하고 있습니다.</small></div><button type="button" id="enableBackgroundPushV1142">알림 켜기</button>';
+    description.insertAdjacentElement('afterend',box);
+    const status=box.querySelector('#backgroundPushStatusV1142'),button=box.querySelector('#enableBackgroundPushV1142');
+    const update=async()=>{
+      if(!('Notification'in window)||!('serviceWorker'in navigator)||!('PushManager'in window)){status.textContent='이 브라우저는 사이트 밖 알림을 지원하지 않습니다.';button.disabled=true;return}
+      let subscribed=false;try{const registration=await navigator.serviceWorker.ready;subscribed=Boolean(await registration.pushManager.getSubscription())}catch{}
+      if(Notification.permission==='denied'){status.textContent='브라우저 설정에서 알림이 차단되어 있습니다.';button.textContent='권한 차단됨';button.disabled=true}
+      else if(Notification.permission==='granted'&&subscribed){status.textContent='앱을 닫아도 대기번호 호출 알림을 받을 수 있습니다.';button.textContent='알림 켜짐';button.disabled=false}
+      else{status.textContent='한 번만 허용하면 호출 시 백그라운드 알림이 옵니다.';button.textContent='알림 켜기';button.disabled=false}
+    };
+    button.addEventListener('click',async()=>{
+      button.disabled=true;
+      try{
+        if(Notification.permission==='default')await Notification.requestPermission();
+        if(Notification.permission!=='granted')throw new Error('알림 권한이 필요합니다.');
+        const pushKey=await window.baemoonFirebase?.getPushPublicKey?.();
+        if(pushKey&&pushKey.configured===false)throw new Error('서버의 백그라운드 알림 키가 아직 설정되지 않았습니다.');
+        if(pushKey&&!pushKey.publicKey)throw new Error('서버 알림 공개키를 불러오지 못했습니다.');
+        await window.baemoonApp?.toggleNotify?.(true);
+        await update();
+      }catch(error){status.textContent=error?.message||'알림을 켜지 못했습니다.'}finally{button.disabled=false}
+    });
+    update();
+  }
+  function coalesce(name,ttl=3000){
+    const api=window.baemoonFirebase;if(!api||typeof api[name]!=='function')return;
+    if(api[name].__bm1142)return;
+    const original=api[name].bind(api),entries=new Map();
+    const wrapped=function(...args){
+      const force=Boolean(args[0]?.force);const key=JSON.stringify(args);const now=Date.now();let entry=entries.get(key);
+      if(!force&&entry?.data&&now-entry.at<ttl)return Promise.resolve(entry.data);
+      if(!force&&entry?.promise)return entry.promise;
+      const promise=Promise.resolve().then(()=>original(...args)).then(data=>{entries.set(key,{at:Date.now(),data,promise:null});return data}).finally(()=>{const current=entries.get(key);if(current?.promise===promise)current.promise=null});
+      entries.set(key,{...(entry||{}),promise});return promise;
+    };
+    wrapped.__bm1142=true;api[name]=wrapped;
+  }
+  function installApiCoalescing(){
+    [['getMyServerOverview',3000],['getMyQueueStatus',3000],['getAdminStats',5000],['getAdminBoothOverview',3000],['getParticipations',5000],['getSlotStatus',3000],['getAdminSlotQueue',3000],['getAdminReservations',5000]].forEach(([name,ttl])=>coalesce(name,ttl));
+  }
+  let versionPatchedV1142=false;
+  function refreshVersion(){
+    document.documentElement.dataset.baemoonVersion=VERSION;if(versionPatchedV1142)return;versionPatchedV1142=true;
+    const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);let node;
+    while((node=walker.nextNode()))if(/v11\.(27|3[4-6]|4[01])/.test(node.nodeValue||''))node.nodeValue=node.nodeValue.replace(/v11\.(27|3[4-6]|4[01])/g,'v11.42');
+  }
+  function runUi(){enhanceStudentQr();hideBottomFestivalAdd();addPushUi();refreshVersion()}
+  let queued=false;const observer=new MutationObserver(()=>{if(queued)return;queued=true;requestAnimationFrame(()=>{queued=false;runUi()})});
+  observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['class','hidden']});
+  (async()=>{
+    for(let i=0;i<180;i++){if(window.__firebaseRuntimeReady&&window.baemoonFirebase&&window.baemoonApp)break;await sleep(100)}
+    installApiCoalescing();runUi();
+    window.addEventListener('online',()=>{installApiCoalescing();runUi()});
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden)runUi()});
+    console.info('Baemoon v11.42 performance features ready');
+  })();
+})();
+
+/* ===== v11.43 individual queue call · push repair · compact MY · festival admin navigation ===== */
+(()=>{
+  'use strict';
+  if(window.__BAEMOON_FEATURES_1143__)return;
+  window.__BAEMOON_FEATURES_1143__=true;
+  const VERSION='11.43';
+  const API_BASE='https://baemoon-reservation-server.timon20091220.workers.dev';
+  const CANCEL_CALL_MESSAGE='호출이 잘못되었습니다. 죄송합니다. 조금만 더 기다려주십시오.';
+  const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  const escV=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));
+  const cancelledQueueIds=new Map();
+  let firebaseModulesPromise=null;
+  let apiInstalled=false;
+  let pushBusy=false;
+  let adminReviewBusy=false;
+  let adminReviewLastRun=0;
+  let versionTextPatched=false;
+
+  async function waitReady(){
+    for(let i=0;i<200;i++){
+      if(window.__firebaseRuntimeReady&&window.baemoonFirebase&&window.baemoonApp)return true;
+      await sleep(100);
+    }
+    throw new Error('앱 연결 준비 시간이 초과되었습니다.');
+  }
+  async function firebaseModules(){
+    if(!firebaseModulesPromise){
+      firebaseModulesPromise=Promise.all([
+        import('https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js'),
+        import('https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js'),
+        import('https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js')
+      ]).then(([app,auth,firestore])=>({app,auth,firestore}));
+    }
+    return firebaseModulesPromise;
+  }
+  async function apiRequest(path,{method='GET',body,retry=true}={}){
+    const {app,auth}=await firebaseModules();
+    const user=auth.getAuth(app.getApp()).currentUser;
+    if(!user)throw new Error('로그인이 필요합니다.');
+    const token=await user.getIdToken(false);
+    let response;
+    try{
+      response=await fetch(`${API_BASE}${path}`,{
+        method,cache:'no-store',
+        headers:{Authorization:`Bearer ${token}`,Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},
+        body:body===undefined?undefined:JSON.stringify(body)
+      });
+    }catch(error){
+      if(retry){await sleep(300);return apiRequest(path,{method,body,retry:false})}
+      throw new Error('예약 서버에 연결할 수 없습니다.');
+    }
+    let payload={};try{payload=await response.json()}catch{}
+    if(response.status===401&&retry){await user.getIdToken(true);return apiRequest(path,{method,body,retry:false})}
+    if(!response.ok||payload?.ok===false){
+      const error=new Error(payload?.error?.message||`예약 서버 오류 (${response.status})`);
+      error.code=payload?.error?.code||`api-${response.status}`;
+      error.details=payload?.error?.details;
+      throw error;
+    }
+    return payload;
+  }
+  function normalizeQueue(row={}){
+    return {
+      id:String(row.id||''),slotId:String(row.slot_key||row.slotId||''),festivalId:String(row.festival_id||row.festivalId||''),festivalName:String(row.festival_name||row.festivalName||''),
+      boothId:String(row.booth_id||row.boothId||''),boothName:String(row.booth_name||row.boothName||''),time:String(row.time||'즉시 예약'),userUid:String(row.user_uid||row.userUid||''),
+      participantRole:String(row.participant_role||row.participantRole||''),displayName:String(row.display_name||row.displayName||'예약자'),guestCode:String(row.guest_code||row.guestCode||''),
+      queueNumber:Number(row.queue_number||row.queueNumber||0),status:String(row.status||'waiting')==='called'?'called':'waiting',createdAt:Number(row.created_at||row.createdAt||Date.now()),
+      calledAt:Number(row.called_at||row.calledAt||0)||null,aheadCount:Number(row.aheadCount||0),callCount:Number(row.call_count||row.callCount||0)
+    };
+  }
+  function normalizeReservation(row={}){
+    return {
+      id:String(row.id||''),slotId:String(row.slot_key||row.slotId||''),festivalId:String(row.festival_id||row.festivalId||''),festivalName:String(row.festival_name||row.festivalName||''),
+      boothId:String(row.booth_id||row.boothId||''),boothName:String(row.booth_name||row.boothName||''),time:String(row.time||'즉시 예약'),userUid:String(row.user_uid||row.userUid||''),
+      participantRole:String(row.participant_role||row.participantRole||''),user:String(row.display_name||row.displayName||row.user||'예약자'),name:String(row.display_name||row.displayName||row.name||'예약자'),
+      guestCode:String(row.guest_code||row.guestCode||''),groupSize:Number(row.group_size||row.groupSize||1),status:String(row.status||'confirmed'),checkInCode:String(row.check_in_code||row.checkInCode||''),
+      checkedIn:Boolean(Number(row.checked_in||row.checkedIn||0)),checkedInAt:Number(row.checked_in_at||row.checkedInAt||0)||null,createdAt:Number(row.created_at||row.createdAt||Date.now()),updatedAt:Number(row.updated_at||row.updatedAt||Date.now())
+    };
+  }
+  async function writePersonalNotification(queue,{title,body,type}){
+    const uid=String(queue?.user_uid||queue?.userUid||'');if(!uid)return;
+    try{
+      const {app,firestore}=await firebaseModules();const db=firestore.getFirestore(app.getApp());
+      const ref=firestore.doc(firestore.collection(db,'userNotifications',uid,'items'));
+      await firestore.setDoc(ref,{id:ref.id,title,body,type,audience:'개인',ownerUid:uid,queueId:String(queue?.id||''),boothName:String(queue?.booth_name||queue?.boothName||'부스'),time:String(queue?.time||'즉시 예약'),createdAt:Date.now()});
+    }catch(error){console.warn('개인 알림 저장 실패',error)}
+  }
+  function updateQueueCache(raw){
+    const item=normalizeQueue(raw);const list=window.firebaseCache?.queueEntries||(window.firebaseCache.queueEntries=[]);const index=list.findIndex(row=>String(row.id)===item.id);
+    if(index>=0)list[index]=item;else list.push(item);return item;
+  }
+  function installApi(){
+    if(apiInstalled||!window.baemoonFirebase)return;apiInstalled=true;const api=window.baemoonFirebase;
+    api.callQueueEntry=async queueId=>{
+      const result=await apiRequest('/api/admin/queue/call',{method:'POST',body:{queueId:String(queueId)}});
+      if(result?.queue)updateQueueCache(result.queue);
+      return result;
+    };
+    api.cancelQueueCall=async queueId=>{
+      const result=await apiRequest('/api/admin/queue/cancel-call',{method:'POST',body:{queueId:String(queueId)}});
+      if(result?.queue)updateQueueCache(result.queue);
+      return result;
+    };
+    api.getPushStatus=()=>apiRequest('/api/push/status');
+    api.testPush=()=>apiRequest('/api/push/test',{method:'POST',body:{}});
+  }
+
+  function selectedAdminEntry(){
+    const key=String(window.baemoonApp?.state?.currentQueueBoothKey||'');if(!key)return null;
+    for(const festival of (window.firebaseCache?.festivals||[]))for(const booth of (festival.booths||[]))if(`${festival.id}:${booth.id}`===key)return {festival,booth};
+    return null;
+  }
+  function selectedQueueTime(){return document.querySelector('#adminQueueTimeV1129')?.value||'즉시 예약'}
+  function queueLabel(item){
+    try{return typeof queueUserLabel==='function'?queueUserLabel(item):(item.displayName||'예약자')}catch{return item.displayName||'예약자'}
+  }
+  async function refreshAdminQueue(festivalId,boothId,time){
+    const overview=await window.baemoonFirebase.getAdminBoothOverview({festivalId,boothId,time,force:true});
+    const others=(window.firebaseCache.reservations||[]).filter(item=>!(item.festivalId===festivalId&&item.boothId===boothId));
+    window.firebaseCache.reservations=[...others,...(overview.reservations||[]).map(normalizeReservation)];
+    window.firebaseCache.queueEntries=(overview.queue||[]).map(normalizeQueue);
+    renderAdminBoothQueue(festivalId,boothId,time);
+  }
+  const baseRenderAdminBoothQueueV1143=typeof renderAdminBoothQueue==='function'?renderAdminBoothQueue:null;
+  renderAdminBoothQueue=function(festivalId,boothId,time=null){
+    const list=document.querySelector('#adminBoothQueueList');if(!list){baseRenderAdminBoothQueueV1143?.(festivalId,boothId,time);return}
+    const activeTime=String(time||selectedQueueTime()||'즉시 예약');
+    const entries=(window.firebaseCache?.queueEntries||[]).map(normalizeQueue).filter(item=>
+      ['waiting','called'].includes(item.status)&&String(item.festivalId)===String(festivalId)&&String(item.boothId)===String(boothId)&&String(item.time||'즉시 예약')===activeTime
+    ).sort((a,b)=>Number(a.queueNumber)-Number(b.queueNumber));
+    list.innerHTML=entries.length?entries.map(item=>{
+      const count=Math.max(0,Number(item.callCount||0)),called=item.status==='called';
+      return `<article class="admin-queue-student-v1143 ${called?'called':'waiting'}" data-queue-row-v1143="${escV(item.id)}">
+        <div class="admin-queue-person-v1143"><span>${called?'호출됨':'호출 전'} · 대기번호 ${item.queueNumber}번 · ${count}/3</span><b>${escV(queueLabel(item))}</b><small>${item.participantRole==='guest'?'게스트':'학생'} · ${new Date(item.createdAt).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</small></div>
+        <div class="admin-queue-actions-v1143">
+          <button type="button" data-call-queue-v1143="${escV(item.id)}" ${count>=3?'disabled':''}>${count>=3?'3회 호출 완료':called?'다시 호출':'호출'}</button>
+          ${called?`<button type="button" class="cancel-call-v1143" data-cancel-call-v1143="${escV(item.id)}">호출 취소</button><button type="button" data-queue-checkin="${escV(item.id)}">QR 확인</button><button type="button" data-skip-queue="${escV(item.id)}">무응답 처리</button>`:''}
+        </div>
+      </article>`;
+    }).join(''):'<div class="admin-empty">현재 대기자가 없습니다.</div>';
+    hideNextCallButton();
+  };
+  if(window.baemoonApp)window.baemoonApp.renderAdminBoothQueue=renderAdminBoothQueue;
+  function hideNextCallButton(){const button=document.querySelector('#callNextQueueButton');if(button){button.hidden=true;button.style.display='none'}}
+
+  function hideReservationCardsInMy(){
+    const list=document.querySelector('#myReservationList');if(list){list.hidden=true;list.style.display='none';const parent=list.parentElement;parent?.querySelectorAll('.section-heading').forEach(head=>{if(/예약/.test(head.textContent||''))head.hidden=true})}
+    const count=document.querySelector('#reservationCount');if(count)count.hidden=true;
+    const shortcut=document.querySelector('#myReservationsButton');if(shortcut)shortcut.hidden=true;
+  }
+  function queueMine(){
+    const current=window.baemoonApp?.session?.();const now=Date.now();
+    for(const [id,until] of cancelledQueueIds)if(until<=now)cancelledQueueIds.delete(id);
+    return (window.firebaseCache?.queueEntries||[]).map(normalizeQueue).filter(item=>item.userUid===current?.uid&&!cancelledQueueIds.has(item.id)&&['waiting','called'].includes(item.status)).sort((a,b)=>Number(a.createdAt)-Number(b.createdAt));
+  }
+  function renderCompactMyQueue(){
+    const list=document.querySelector('#myQueueList'),heading=document.querySelector('#myQueueHeading'),count=document.querySelector('#myQueueCount');if(!list)return;
+    const mine=queueMine();if(heading)heading.hidden=!mine.length;if(count)count.textContent=`${mine.length}건`;
+    const signature=mine.map(item=>`${item.id}:${item.status}:${item.queueNumber}:${item.aheadCount}:${item.callCount}`).join('|');
+    if(list.dataset.v1143Signature===signature&&(mine.length?Boolean(list.querySelector('.my-queue-card-v1143')):Boolean(list.querySelector('.festival-empty'))))return;
+    list.dataset.v1143Signature=signature;
+    list.innerHTML=mine.length?mine.map(item=>`<article class="my-queue-card-v1143 ${item.status}" data-my-queue-v1143="${escV(item.id)}">
+      <button type="button" class="my-queue-booth-v1143" data-open-queue-booth-v1143="${escV(item.id)}"><span>${item.status==='called'?'지금 호출됨':`앞에 ${Math.max(0,Number(item.aheadCount||0))}팀`} · ${item.queueNumber}번 · ${escV(String(item.time||'즉시 예약').replace('T',' '))}</span><h3>${escV(item.boothName||'부스')}</h3><small>눌러서 부스 상세 설명 보기</small></button>
+      <div class="my-queue-actions-v1143"><button type="button" data-show-queue-qr-v1143="${escV(item.id)}">QR 확인</button><button type="button" class="danger" data-cancel-queue-v1143="${escV(item.id)}">대기 취소</button></div>
+    </article>`).join(''):'<div class="festival-empty">현재 받은 대기번호가 없습니다.</div>';
+  }
+  function ensureQueueDetail(){
+    let overlay=document.querySelector('#queueBoothDetailV1143');if(overlay)return overlay;
+    overlay=document.createElement('div');overlay.id='queueBoothDetailV1143';overlay.className='queue-booth-detail-v1143';overlay.hidden=true;
+    overlay.innerHTML='<section role="dialog" aria-modal="true"><header><div><p class="eyebrow dark">BOOTH DETAIL</p><h2 id="queueBoothDetailTitleV1143">부스 상세</h2></div><button type="button" data-close-queue-detail-v1143>×</button></header><div id="queueBoothImageV1143" class="queue-booth-image-v1143"></div><p id="queueBoothDescriptionV1143"></p><div id="queueBoothMetaV1143" class="queue-booth-meta-v1143"></div><button type="button" data-close-queue-detail-v1143>확인</button></section>';
+    overlay.querySelectorAll('[data-close-queue-detail-v1143]').forEach(button=>button.addEventListener('click',()=>{overlay.hidden=true;overlay.classList.remove('open')}));
+    overlay.addEventListener('click',event=>{if(event.target===overlay){overlay.hidden=true;overlay.classList.remove('open')}});document.body.append(overlay);return overlay;
+  }
+  function openQueueBoothDetail(queueId){
+    const item=queueMine().find(row=>row.id===String(queueId));if(!item)return;
+    const festival=(window.firebaseCache?.festivals||[]).find(row=>String(row.id)===item.festivalId);const booth=(festival?.booths||[]).find(row=>String(row.id)===item.boothId);
+    const overlay=ensureQueueDetail();overlay.querySelector('#queueBoothDetailTitleV1143').textContent=booth?.name||item.boothName||'부스';overlay.querySelector('#queueBoothDescriptionV1143').textContent=booth?.description||'등록된 부스 설명이 없습니다.';
+    const image=overlay.querySelector('#queueBoothImageV1143');let src='';try{src=typeof imageSrc==='function'?imageSrc(booth?.image):String(booth?.image||'')}catch{}image.style.backgroundImage=src?`url("${src}")`:'';image.classList.toggle('empty',!src);image.textContent=src?'':String(booth?.name||item.boothName||'B').slice(0,1);
+    overlay.querySelector('#queueBoothMetaV1143').innerHTML=`<span>행사 <b>${escV(festival?.name||item.festivalName||'행사')}</b></span><span>위치 <b>${escV(booth?.location||'미정')}</b></span><span>운영 <b>${escV(booth?.owner||'미정')}</b></span><span>체험 시간 <b>${Number(booth?.duration||0)||'-'}분</b></span><span>예약 시간 <b>${escV(String(item.time||'즉시 예약').replace('T',' '))}</b></span>`;
+    overlay.hidden=false;requestAnimationFrame(()=>overlay.classList.add('open'));
+  }
+  async function reservationForQueue(queueId){
+    const queue=queueMine().find(item=>item.id===String(queueId));if(!queue)return null;
+    let reservations=(window.firebaseCache?.reservations||[]).map(normalizeReservation);let found=reservations.find(item=>item.userUid===queue.userUid&&item.festivalId===queue.festivalId&&item.boothId===queue.boothId&&String(item.time||'즉시 예약')===String(queue.time||'즉시 예약'));
+    if(found)return found;
+    const overview=await window.baemoonFirebase.getMyServerOverview({force:true});reservations=(overview.reservations||[]).map(normalizeReservation);window.firebaseCache.reservations=reservations;window.firebaseCache.queueEntries=(overview.queue||[]).map(normalizeQueue);window.firebaseCache.participations=overview.participations||[];
+    return reservations.find(item=>item.userUid===queue.userUid&&item.festivalId===queue.festivalId&&item.boothId===queue.boothId&&String(item.time||'즉시 예약')===String(queue.time||'즉시 예약'))||null;
+  }
+  async function openQueueQr(queueId){
+    const reservation=await reservationForQueue(queueId);if(!reservation)throw new Error('QR에 연결된 예약을 찾지 못했습니다.');
+    window.baemoonApp.state.currentReservationId=reservation.id;
+    document.querySelector('#openReservationQrButton')?.click();
+  }
+
+  function renderMyParticipationsCompact(){
+    const section=document.querySelector('#myParticipationSectionV1136'),list=section?.querySelector('#myParticipationListV1136'),count=section?.querySelector('#myParticipationCountV1136');if(!section||!list)return;
+    const current=window.baemoonApp?.session?.(),items=Array.isArray(window.firebaseCache?.participations)?window.firebaseCache.participations:[];section.hidden=!current||!['student','guest'].includes(current.role);if(count)count.textContent=`${items.length}건`;
+    const reviews=window.firebaseCache?.reviews||[];
+    const signature=items.map(item=>{const review=reviews.find(row=>String(row.participation_id||row.participationId||'')===String(item.id));return `${item.id}:${review?.id||review?.updated_at||''}`}).join('|');
+    if(list.dataset.v1143Signature===signature&&(items.length?Boolean(list.querySelector('.my-participation-card-v1143')):Boolean(list.querySelector('.festival-empty'))))return;
+    list.dataset.v1143Signature=signature;
+    list.innerHTML=items.length?items.map(item=>{const review=reviews.find(row=>String(row.participation_id||row.participationId||'')===String(item.id));return `<article class="my-participation-card-v1143"><h3>${escV(item.booth_name||item.boothName||'부스')}</h3><button type="button" data-write-review-v1136="${escV(item.id)}">${review?'후기 수정':'후기 남기기'}</button></article>`}).join(''):'<div class="festival-empty">아직 참여 완료된 부스가 없습니다.</div>';
+  }
+  async function renderAdminReviewsCompact(force=false){
+    if(window.baemoonApp?.session?.()?.role!=='admin'||adminReviewBusy)return;
+    if(!force&&Date.now()-adminReviewLastRun<1500)return;adminReviewLastRun=Date.now();const section=document.querySelector('#adminReviewsV1136'),list=section?.querySelector('#adminReviewListV1136');if(!section||!list)return;
+    const title=section.querySelector('.admin-participation-head b'),sub=section.querySelector('.admin-participation-head small');if(title)title.textContent='학생·게스트 후기';if(sub)sub.textContent='참여 완료 후 작성된 후기';adminReviewBusy=true;if(force)list.innerHTML='<div class="admin-empty">후기를 새로 불러오는 중…</div>';
+    try{const payload=await window.baemoonFirebase.getAdminReviews({force});const items=payload.reviews||[];const signature=items.map(item=>`${item.id}:${item.updated_at}:${item.review_text}`).join('|');if(!force&&list.dataset.v1143Signature===signature&&(items.length?Boolean(list.querySelector('.admin-review-card-v1143')):Boolean(list.querySelector('.admin-empty'))))return;list.dataset.v1143Signature=signature;list.innerHTML=items.length?items.map(item=>`<article class="admin-review-card-v1143"><span>${item.participant_role==='guest'?'게스트':'학생'} · ${escV(item.display_name||'참여자')}</span><h3>${escV(item.booth_name||'부스')}</h3><p>${escV(item.review_text||'')}</p><button type="button" data-delete-review-v1143="${escV(item.id)}">삭제</button></article>`).join(''):'<div class="admin-empty">등록된 후기가 없습니다.</div>'}catch(error){list.innerHTML=`<div class="admin-empty">${escV(error.message||'후기를 불러오지 못했습니다.')}</div>`}finally{adminReviewBusy=false}
+  }
+
+  function enhanceQrUi(){
+    const button=document.querySelector('#openReservationQrButton');if(button&&!button.dataset.v1143){button.dataset.v1143='1';button.classList.add('open-reservation-qr-v1143');button.innerHTML='<span class="qr-symbol-v1143">▦</span><span><b>QR 체크인 코드</b><small>부스에서 바로 보여주세요.</small></span><i>열기</i>'}
+    const modal=document.querySelector('#reservationQrModal'),card=modal?.querySelector('.modal-card');if(card)card.classList.add('reservation-qr-card-v1143');
+    const code=document.querySelector('#reservationQrCodeText');if(code)code.classList.add('reservation-code-v1143');
+  }
+
+  function ensureFestivalAdminToggle(){
+    const wrap=document.querySelector('#festivalAdminDetailV1136');if(!wrap)return;const heading=wrap.querySelector(':scope > .section-heading');if(!heading)return;
+    let button=heading.querySelector('#toggleFestivalAdminV1143');if(!button){button=document.createElement('button');button.type='button';button.id='toggleFestivalAdminV1143';button.addEventListener('click',()=>{wrap.classList.toggle('collapsed-v1143');button.textContent=wrap.classList.contains('collapsed-v1143')?'관리 열기':'관리 닫기'});heading.append(button)}
+    button.textContent=wrap.classList.contains('collapsed-v1143')?'관리 열기':'관리 닫기';
+    const deleteButton=document.querySelector('#deleteFestivalV1135');if(deleteButton){deleteButton.hidden=true;deleteButton.style.display='none'}
+  }
+  async function deleteFestivalFromHub(festivalId,button){
+    const festival=(window.firebaseCache?.festivals||[]).find(item=>String(item.id)===String(festivalId));if(!festival)return;
+    const ok=window.__bmAppConfirmV1130?await window.__bmAppConfirmV1130('행사 삭제',`${festival.name} 행사와 행사 안의 부스를 삭제합니다.`,'삭제'):confirm(`${festival.name} 행사를 삭제할까요?`);if(!ok)return;
+    button.disabled=true;
+    try{
+      for(const booth of (festival.booths||[]))await window.baemoonFirebase.purgeBoothData?.({festivalId:festival.id,boothId:booth.id});
+      const saved=await window.baemoonFirebase.saveFestivals((window.firebaseCache.festivals||[]).filter(item=>String(item.id)!==String(festivalId)));window.firebaseCache.festivals=saved;state.managerFestivalId=null;
+      renderFestivalHub();renderHome();window.baemoonApp?.toast?.('행사를 삭제했습니다.');
+    }catch(error){window.baemoonApp?.toast?.(error.message||'행사 삭제에 실패했습니다.')}finally{button.disabled=false}
+  }
+  function ensureFestivalHubAdmin(){
+    const hub=document.querySelector('section[data-screen="festivals"]');if(!hub)return;let section=document.querySelector('#festivalHubAdminV1143');
+    if(!section){section=document.createElement('section');section.id='festivalHubAdminV1143';section.className='festival-hub-admin-v1143';hub.append(section)}
+    const isAdmin=window.baemoonApp?.session?.()?.role==='admin';section.hidden=!isAdmin||window.baemoonApp?.state?.screen!=='festivals';if(section.hidden)return;
+    const items=window.firebaseCache?.festivals||[];
+    const signature=items.map(item=>`${item.id}:${item.name}:${item.year}:${item.visible}:${item.featured}:${(item.booths||[]).length}:${item.start}`).join('|');
+    if(section.dataset.v1143Signature===signature&&section.querySelector('.festival-hub-admin-list-v1143'))return;
+    section.dataset.v1143Signature=signature;
+    section.innerHTML=`<div class="section-heading"><div><p class="eyebrow dark">FESTIVAL ADMIN</p><h2>행사 추가·삭제 관리</h2></div><button type="button" id="addFestivalHubV1143">행사 추가</button></div><div class="festival-hub-admin-list-v1143">${items.length?items.map(item=>`<article><div><span>${item.visible?'공개':'숨김'}${item.featured?' · 대표 행사':''}</span><h3>${escV(item.name)} ${escV(item.year||'')}</h3><p>부스 ${(item.booths||[]).length}개 · ${escV(item.start||'날짜 미정')}</p></div><div><button type="button" data-open-festival-admin-v1143="${escV(item.id)}">행사 관리</button><button type="button" data-edit-festival-hub-v1143="${escV(item.id)}">정보 수정</button><button type="button" class="danger" data-delete-festival-hub-v1143="${escV(item.id)}">삭제</button></div></article>`).join(''):'<div class="admin-empty">등록된 행사가 없습니다.</div>'}</div>`;
+    section.querySelector('#addFestivalHubV1143')?.addEventListener('click',()=>openFestivalEditor());
+    section.querySelectorAll('[data-open-festival-admin-v1143]').forEach(button=>button.addEventListener('click',()=>{state.currentFestivalId=button.dataset.openFestivalAdminV1143;state.managerFestivalId=state.currentFestivalId;route('festival')}));
+    section.querySelectorAll('[data-edit-festival-hub-v1143]').forEach(button=>button.addEventListener('click',()=>openFestivalEditor(button.dataset.editFestivalHubV1143)));
+    section.querySelectorAll('[data-delete-festival-hub-v1143]').forEach(button=>button.addEventListener('click',()=>deleteFestivalFromHub(button.dataset.deleteFestivalHubV1143,button)));
+    const oldEditor=document.querySelector('#festivalInlineAdminEditor');if(oldEditor){oldEditor.hidden=true;oldEditor.style.display='none'}
+  }
+  function keepFestivalEditorOutOfDetail(){
+    const editor=document.querySelector('#festivalInlineAdminEditor'),hub=document.querySelector('section[data-screen="festivals"]');if(!editor||!hub)return;
+    if(editor.parentElement!==hub)hub.append(editor);editor.hidden=true;editor.style.display='none';
+  }
+
+  function base64Bytes(value){const pad='='.repeat((4-String(value).length%4)%4),text=(String(value)+pad).replace(/-/g,'+').replace(/_/g,'/');return Uint8Array.from(atob(text),char=>char.charCodeAt(0))}
+  function sameKey(subscription,key){try{const current=new Uint8Array(subscription.options.applicationServerKey||[]),wanted=base64Bytes(key);return current.length===wanted.length&&current.every((value,index)=>value===wanted[index])}catch{return false}}
+  async function ensurePushSubscription(){
+    if(pushBusy)throw new Error('알림 연결을 처리 중입니다.');pushBusy=true;
+    try{
+      if(!window.isSecureContext)throw new Error('HTTPS 보안 연결에서만 백그라운드 알림을 사용할 수 있습니다.');
+      if(!('Notification'in window)||!('serviceWorker'in navigator)||!('PushManager'in window))throw new Error('현재 브라우저는 사이트 밖 알림을 지원하지 않습니다. Chrome 또는 홈 화면 앱에서 열어주세요.');
+      const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;if(isIOS&&!window.navigator.standalone&&!matchMedia('(display-mode: standalone)').matches)throw new Error('iPhone에서는 Safari의 홈 화면에 추가한 앱에서 알림을 켜야 합니다.');
+      const permission=Notification.permission==='granted'?'granted':await Notification.requestPermission();if(permission!=='granted')throw new Error('브라우저 알림 권한을 허용해주세요.');
+      const registration=await window.baemoonApp.ensureServiceWorker();if(!registration)throw new Error('서비스 워커를 등록하지 못했습니다.');try{await registration.update()}catch{}
+      const keyResult=await window.baemoonFirebase.getPushPublicKey();if(!keyResult?.configured||!keyResult?.publicKey)throw new Error('Cloudflare 서버의 백그라운드 알림 키가 설정되지 않았습니다.');
+      let subscription=await registration.pushManager.getSubscription();
+      if(subscription&&!sameKey(subscription,keyResult.publicKey)){await window.baemoonFirebase.removePushSubscription?.(subscription.endpoint).catch(()=>{});await subscription.unsubscribe().catch(()=>{});subscription=null}
+      if(!subscription)subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64Bytes(keyResult.publicKey)});
+      await window.baemoonFirebase.savePushSubscription(subscription.toJSON());await window.baemoonFirebase.setNotificationPreference(true);
+      const status=await window.baemoonFirebase.getPushStatus();if(Number(status.subscriptions||0)<1)throw new Error('알림 구독이 서버에 저장되지 않았습니다.');
+      return status;
+    }finally{pushBusy=false}
+  }
+  async function disablePushSubscription(){
+    const registration=await window.baemoonApp?.ensureServiceWorker?.();const subscription=await registration?.pushManager?.getSubscription?.();if(subscription){await window.baemoonFirebase.removePushSubscription?.(subscription.endpoint).catch(()=>{});await subscription.unsubscribe().catch(()=>{})}await window.baemoonFirebase.setNotificationPreference(false);
+  }
+  function setUiValue(element,key,value){
+    if(!element)return;
+    if(key==='text'){if(element.textContent!==value)element.textContent=value;return}
+    if(element[key]!==value)element[key]=value;
+  }
+  async function pushUiStatus(){
+    const statusEl=document.querySelector('#backgroundPushStatusV1142'),enable=document.querySelector('#enableBackgroundPushV1142'),test=document.querySelector('#testBackgroundPushV1143');if(!statusEl||!enable)return;
+    if(!('Notification'in window)||!('serviceWorker'in navigator)||!('PushManager'in window)){
+      setUiValue(statusEl,'text','이 브라우저에서는 사이트 밖 알림을 사용할 수 없습니다.');setUiValue(enable,'disabled',true);if(test)setUiValue(test,'disabled',true);return;
+    }
+    let local=false,server=0,configured=false;
+    try{
+      const registration=await navigator.serviceWorker.ready;local=Boolean(await registration.pushManager.getSubscription());
+      const result=await window.baemoonFirebase.getPushStatus();server=Number(result.subscriptions||0);configured=result.configured!==false;
+    }catch{}
+    const ready=Notification.permission==='granted'&&local&&server>0;
+    const message=!configured?'Cloudflare 서버의 백그라운드 알림 키 설정이 필요합니다.':ready?'백그라운드 알림 연결 완료 · 사이트를 닫아도 호출 알림이 옵니다.':Notification.permission==='denied'?'브라우저 설정에서 알림 권한이 차단되어 있습니다.':'알림 켜기를 누른 뒤 테스트 알림으로 확인해주세요.';
+    setUiValue(statusEl,'text',message);setUiValue(enable,'text',ready?'알림 다시 연결':'알림 켜기');setUiValue(enable,'disabled',false);
+    if(test){setUiValue(test,'disabled',!ready);setUiValue(test,'text','테스트 알림')}
+  }
+  function enhancePushPanel(){
+    const box=document.querySelector('#backgroundPushV1142');if(!box)return;box.classList.add('background-push-v1143');let test=box.querySelector('#testBackgroundPushV1143');if(!test){test=document.createElement('button');test.type='button';test.id='testBackgroundPushV1143';test.textContent='테스트 알림';box.append(test)}
+    const enable=box.querySelector('#enableBackgroundPushV1142');if(enable&&!enable.dataset.v1143){enable.dataset.v1143='1';enable.addEventListener('click',async event=>{event.preventDefault();event.stopImmediatePropagation();enable.disabled=true;try{await ensurePushSubscription();window.baemoonApp?.toast?.('백그라운드 알림을 연결했습니다. 테스트 알림을 눌러 확인해주세요.')}catch(error){window.baemoonApp?.toast?.(error.message||'알림을 연결하지 못했습니다.')}finally{await pushUiStatus();enable.disabled=false}},true)}
+    if(!test.dataset.v1143){test.dataset.v1143='1';test.addEventListener('click',async()=>{test.disabled=true;try{await window.baemoonFirebase.testPush();window.baemoonApp?.toast?.('테스트 알림을 전송했습니다. 잠시 후 알림을 확인해주세요.')}catch(error){window.baemoonApp?.toast?.(error.message||'테스트 알림 전송에 실패했습니다.')}finally{setTimeout(pushUiStatus,800)} })}
+    if(box.dataset.pushStatusInitV1143!=='1'){box.dataset.pushStatusInitV1143='1';pushUiStatus()}
+  }
+
+  const baseRenderMyV1143=typeof renderMy==='function'?renderMy:null;
+  renderMy=function(){baseRenderMyV1143?.();hideReservationCardsInMy();renderCompactMyQueue();if(window.__BAEMOON_FEATURES_1202__)window.__renderMyReviewsV1202?.();else renderMyParticipationsCompact();enhanceQrUi()};
+  if(window.baemoonApp)window.baemoonApp.renderMy=renderMy;
+  const baseRenderFestivalHubV1143=typeof renderFestivalHub==='function'?renderFestivalHub:null;
+  renderFestivalHub=function(){baseRenderFestivalHubV1143?.();ensureFestivalHubAdmin();keepFestivalEditorOutOfDetail()};
+  if(window.baemoonApp)window.baemoonApp.renderFestivalHub=renderFestivalHub;
+  const baseRenderFestivalV1143=typeof renderFestival==='function'?renderFestival:null;
+  renderFestival=function(){baseRenderFestivalV1143?.();keepFestivalEditorOutOfDetail();ensureFestivalAdminToggle();setTimeout(()=>{if(!window.__BAEMOON_FEATURES_1202__)renderAdminReviewsCompact(false)},0)};
+  if(window.baemoonApp)window.baemoonApp.renderFestival=renderFestival;
+
+  document.addEventListener('click',event=>{
+    const listBack=event.target.closest('#festivalListBackV1135');if(listBack){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();state.managerFestivalId=null;route('festivals');return}
+    const call=event.target.closest('[data-call-queue-v1143]');if(call){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();(async()=>{const entry=selectedAdminEntry();if(!entry)return;call.disabled=true;try{const result=await window.baemoonFirebase.callQueueEntry(call.dataset.callQueueV1143);if(result.limitReached)window.baemoonApp?.toast?.('이 학생은 최대 3회까지 호출했습니다.');else window.baemoonApp?.toast?.(`대기번호 ${Number(result.queue?.queue_number||result.queue?.queueNumber||0)}번을 ${Number(result.callCount||0)}/3회 호출했습니다.`);await refreshAdminQueue(entry.festival.id,entry.booth.id,selectedQueueTime())}catch(error){window.baemoonApp?.toast?.(error.message||'호출하지 못했습니다.')}finally{call.disabled=false}})();return}
+    const cancelCall=event.target.closest('[data-cancel-call-v1143]');if(cancelCall){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();(async()=>{const entry=selectedAdminEntry();if(!entry)return;cancelCall.disabled=true;try{await window.baemoonFirebase.cancelQueueCall(cancelCall.dataset.cancelCallV1143);await refreshAdminQueue(entry.festival.id,entry.booth.id,selectedQueueTime());window.baemoonApp?.toast?.(CANCEL_CALL_MESSAGE)}catch(error){window.baemoonApp?.toast?.(error.message||'호출을 취소하지 못했습니다.')}finally{cancelCall.disabled=false}})();return}
+    const cancelQueue=event.target.closest('[data-cancel-queue-v1143],#myQueueList [data-cancel-queue]');if(cancelQueue){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();const queueId=cancelQueue.dataset.cancelQueueV1143||cancelQueue.dataset.cancelQueue;if(!queueId)return;(async()=>{cancelQueue.disabled=true;const card=cancelQueue.closest('article');card?.classList.add('cancelling-v1143');try{await window.baemoonFirebase.cancelQueueEntry(queueId);cancelledQueueIds.set(queueId,Date.now()+5000);card?.remove();renderCompactMyQueue();window.baemoonApp?.toast?.('대기번호를 취소했습니다.')}catch(error){card?.classList.remove('cancelling-v1143');window.baemoonApp?.toast?.(error.message||'대기번호 취소에 실패했습니다.')}finally{cancelQueue.disabled=false}})();return}
+    const queueDetail=event.target.closest('[data-open-queue-booth-v1143]');if(queueDetail){event.preventDefault();openQueueBoothDetail(queueDetail.dataset.openQueueBoothV1143);return}
+    const queueQr=event.target.closest('[data-show-queue-qr-v1143]');if(queueQr){event.preventDefault();queueQr.disabled=true;openQueueQr(queueQr.dataset.showQueueQrV1143).catch(error=>window.baemoonApp?.toast?.(error.message||'QR을 열지 못했습니다.')).finally(()=>queueQr.disabled=false);return}
+    const deleteReview=event.target.closest('[data-delete-review-v1143]');if(deleteReview){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();(async()=>{const ok=window.__bmAppConfirmV1130?await window.__bmAppConfirmV1130('후기 삭제','이 후기를 삭제할까요?','삭제'):confirm('후기를 삭제할까요?');if(!ok)return;deleteReview.disabled=true;try{await window.baemoonFirebase.deleteAdminReview(deleteReview.dataset.deleteReviewV1143);await renderAdminReviewsCompact(true)}catch(error){window.baemoonApp?.toast?.(error.message||'후기 삭제에 실패했습니다.')}finally{deleteReview.disabled=false}})();return}
+    const refreshReviews=event.target.closest('#refreshAdminReviewsV1136');if(refreshReviews){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();renderAdminReviewsCompact(true);return}
+  },true);
+
+  function runUi(){
+    hideNextCallButton();enhanceQrUi();enhancePushPanel();keepFestivalEditorOutOfDetail();
+    if(window.baemoonApp?.state?.screen==='my'){hideReservationCardsInMy();renderCompactMyQueue();if(!window.__BAEMOON_FEATURES_1202__)renderMyParticipationsCompact()}
+    if(window.baemoonApp?.state?.screen==='festivals')ensureFestivalHubAdmin();
+    if(window.baemoonApp?.state?.screen==='festival'){ensureFestivalAdminToggle();if(!window.__BAEMOON_FEATURES_1202__)renderAdminReviewsCompact(false)}
+    document.documentElement.dataset.baemoonVersion=VERSION;
+    if(!versionTextPatched){versionTextPatched=true;const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);let node;while((node=walker.nextNode()))if(/v11\.42/.test(node.nodeValue||''))node.nodeValue=node.nodeValue.replace(/v11\.42/g,'v11.43')}
+  }
+  let uiQueued=false;const observer=new MutationObserver(()=>{if(uiQueued)return;uiQueued=true;requestAnimationFrame(()=>{uiQueued=false;runUi()})});
+  observer.observe(document.body,{childList:true,subtree:true});
+
+  (async()=>{
+    try{
+      await waitReady();installApi();
+      const originalToggle=typeof toggleNotify==='function'?toggleNotify:null;
+      toggleNotify=async enabled=>{
+        try{if(enabled)await ensurePushSubscription();else await disablePushSubscription();renderNotifications?.();window.baemoonApp?.toast?.(enabled?'앱과 백그라운드 알림을 켰습니다.':'앱 알림을 껐습니다.')}catch(error){if(originalToggle&&!enabled)await originalToggle(false).catch(()=>{});window.baemoonApp?.toast?.(error.message||'알림 설정을 변경하지 못했습니다.');throw error}finally{pushUiStatus()}
+      };
+      window.baemoonApp.toggleNotify=toggleNotify;
+      runUi();
+      if('Notification'in window&&Notification.permission==='granted'&&window.baemoonApp?.session?.())ensurePushSubscription().then(pushUiStatus).catch(()=>pushUiStatus());
+      window.addEventListener('online',runUi);document.addEventListener('visibilitychange',()=>{if(!document.hidden)runUi()});
+      console.info('Baemoon v11.43 features ready');
+    }catch(error){console.error('v11.43 initialization failed',error)}
+  })();
+})();
+
+/* ===== v11.44 operation-end filter · rating reviews · square admin rosters · push diagnostics ===== */
+(()=>{
+  'use strict';
+  if(window.__BAEMOON_FEATURES_1144__)return;
+  window.__BAEMOON_FEATURES_1144__=true;
+
+  const VERSION='11.44';
+  const API_BASE='https://baemoon-reservation-server.timon20091220.workers.dev';
+  const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  const escV=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));
+  let modulesPromise=null;
+  let reviewCache={at:0,data:null,promise:null};
+  let reviewRenderBusy=false;
+  let lastReviewRender=0;
+  let lastParticipationDecoration='';
+
+  async function waitReady(){
+    for(let i=0;i<200;i++){
+      if(window.__firebaseRuntimeReady&&window.baemoonFirebase&&window.baemoonApp)return true;
+      await sleep(100);
+    }
+    throw new Error('앱 연결 준비 시간이 초과되었습니다.');
+  }
+  async function firebaseModules(){
+    if(!modulesPromise){
+      modulesPromise=Promise.all([
+        import('https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js'),
+        import('https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js')
+      ]).then(([app,auth])=>({app,auth}));
+    }
+    return modulesPromise;
+  }
+  async function apiRequest(path,{method='GET',body,retry=true}={}){
+    const {app,auth}=await firebaseModules();
+    const user=auth.getAuth(app.getApp()).currentUser;
+    if(!user)throw new Error('로그인이 필요합니다.');
+    const token=await user.getIdToken(false);
+    let response;
+    try{
+      response=await fetch(`${API_BASE}${path}`,{
+        method,cache:'no-store',
+        headers:{Authorization:`Bearer ${token}`,Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},
+        body:body===undefined?undefined:JSON.stringify(body)
+      });
+    }catch(error){
+      if(retry){await sleep(300);return apiRequest(path,{method,body,retry:false})}
+      throw new Error('예약 서버에 연결할 수 없습니다.');
+    }
+    let payload={};try{payload=await response.json()}catch{}
+    if(response.status===401&&retry){await user.getIdToken(true);return apiRequest(path,{method,body,retry:false})}
+    if(!response.ok||payload?.ok===false){
+      const error=new Error(payload?.error?.message||`예약 서버 오류 (${response.status})`);
+      error.code=payload?.error?.code||`api-${response.status}`;
+      error.details=payload?.error?.details;
+      throw error;
+    }
+    return payload;
+  }
+  function installApi(){
+    const api=window.baemoonFirebase;if(!api)return;
+    api.saveMyReview=async payload=>{
+      const result=await apiRequest('/api/me/review',{method:'POST',body:{...payload,rating:Number(payload?.rating||5)}});
+      reviewCache={at:0,data:null,promise:null};return result;
+    };
+    api.getAdminReviews=async({force=false}={})=>{
+      if(!force&&reviewCache.data&&Date.now()-reviewCache.at<5000)return reviewCache.data;
+      if(!force&&reviewCache.promise)return reviewCache.promise;
+      reviewCache.promise=apiRequest('/api/admin/reviews').then(data=>{
+        reviewCache={at:Date.now(),data,promise:null};return data;
+      }).finally(()=>{reviewCache.promise=null});
+      return reviewCache.promise;
+    };
+    api.getPushDiagnostics=()=>apiRequest('/api/push/diagnostics');
+  }
+
+  function parseDateTimeKst(value,{festival=null,endOfDay=false}={}){
+    if(value===null||value===undefined||value==='')return null;
+    if(typeof value==='number'&&Number.isFinite(value))return value;
+    let text=String(value).trim();if(!text||text==='즉시 예약')return null;
+    const korean=text.match(/^(\d{4})[.\/-]\s*(\d{1,2})[.\/-]\s*(\d{1,2})(?:[.\s]+(?:오전|오후)?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if(korean){
+      let [,y,m,d,h='0',min='0',sec='0']=korean;let hour=Number(h);
+      if(/오후/.test(text)&&hour<12)hour+=12;if(/오전/.test(text)&&hour===12)hour=0;
+      if(!korean[4]&&endOfDay){hour=23;min='59';sec='59'}
+      const parsedKst=Date.parse(`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}T${String(hour).padStart(2,'0')}:${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')}+09:00`);return Number.isFinite(parsedKst)?parsedKst:null;
+    }
+    if(/^\d{2}:\d{2}(?::\d{2})?$/.test(text)){
+      const date=String(festival?.start||festival?.date||new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Seoul'}).format(new Date())).slice(0,10);
+      text=`${date}T${text.length===5?`${text}:00`:text}+09:00`;
+    }else if(/^\d{4}-\d{2}-\d{2}$/.test(text)){
+      text+=endOfDay?'T23:59:59+09:00':'T00:00:00+09:00';
+    }else if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(text)){
+      text+=(text.length===16?':00':'')+'+09:00';
+    }
+    const parsed=Date.parse(text);return Number.isFinite(parsed)?parsed:null;
+  }
+  function boothOperationEnd(festival,booth){
+    const explicit=parseDateTimeKst(booth?.openEnd,{festival});
+    if(explicit!==null)return explicit;
+    const slots=(Array.isArray(booth?.times)?booth.times:[]).map(item=>typeof item==='string'?item:(item?.time||item?.value||'')).map(value=>parseDateTimeKst(value,{festival})).filter(Number.isFinite);
+    if(slots.length)return Math.max(...slots)+Math.max(1,Number(booth?.duration||15))*60000;
+    return parseDateTimeKst(festival?.end||festival?.start,{festival,endOfDay:true});
+  }
+  function boothOperationEnded(festival,booth,at=Date.now()){
+    const end=boothOperationEnd(festival,booth);return end!==null&&at>=end;
+  }
+  function visibleBoothsForRole(festival){
+    const role=window.baemoonApp?.session?.()?.role;
+    const booths=Array.isArray(festival?.booths)?festival.booths:[];
+    return role==='admin'?booths:booths.filter(booth=>!boothOperationEnded(festival,booth));
+  }
+
+  const baseRenderBoothsV1144=typeof renderBooths==='function'?renderBooths:null;
+  if(baseRenderBoothsV1144){
+    renderBooths=function(festival){
+      const visible=visibleBoothsForRole(festival);
+      baseRenderBoothsV1144({...festival,booths:visible});
+      const role=window.baemoonApp?.session?.()?.role;
+      if(role!=='admin'){
+        const count=document.querySelector('#festivalBoothCount');if(count)count.textContent=String(visible.length);
+      }else{
+        document.querySelectorAll('#reservationList [data-reserve-booth]').forEach(button=>{
+          const booth=(festival.booths||[]).find(item=>String(item.id)===String(button.dataset.reserveBooth));
+          if(!booth||!boothOperationEnded(festival,booth))return;
+          button.classList.add('booth-ended-v1144');
+          const label=button.querySelector('.reserve-button');if(label)label.textContent='운영 종료';
+        });
+      }
+    };
+    window.baemoonApp&&(window.baemoonApp.renderBooths=renderBooths);
+  }
+  const baseOpenReservationV1144=typeof openReservation==='function'?openReservation:null;
+  if(baseOpenReservationV1144){
+    openReservation=function(boothId){
+      const festival=typeof selectedFestival==='function'?selectedFestival():null;
+      const booth=festival?.booths?.find(item=>String(item.id)===String(boothId));
+      if(festival&&booth&&boothOperationEnded(festival,booth))return window.baemoonApp?.toast?.('운영 시간이 종료된 부스입니다.');
+      return baseOpenReservationV1144(boothId);
+    };
+  }
+
+  function partyRange(availability){
+    const min=Math.max(1,Number(availability?.minPeople||1));
+    const max=Math.max(min,Number(availability?.maxForCurrentUser||min));
+    return Array.from({length:Math.min(12,max-min+1)},(_,index)=>min+index);
+  }
+  function renderPartyButtons(availability){
+    const input=document.querySelector('#reservationPartySize');if(!input)return;
+    input.classList.add('party-input-hidden-v1144');
+    let wrap=document.querySelector('#reservationPartyButtonsV1144');
+    if(!wrap){
+      wrap=document.createElement('div');wrap.id='reservationPartyButtonsV1144';wrap.className='reservation-party-buttons-v1144';
+      input.insertAdjacentElement('afterend',wrap);
+    }
+    const values=partyRange(availability),current=Number(input.value||values[0]||1);
+    wrap.innerHTML=values.map(value=>`<button type="button" data-party-size-v1144="${value}" class="${value===current?'selected':''}"><b>${value}</b><span>명</span></button>`).join('');
+    wrap.querySelectorAll('[data-party-size-v1144]').forEach(button=>button.addEventListener('click',()=>{
+      input.value=button.dataset.partySizeV1144;
+      wrap.querySelectorAll('button').forEach(item=>item.classList.toggle('selected',item===button));
+      input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));
+    }));
+    const hint=document.querySelector('#reservationPartySizeHint');if(hint&&!hint.dataset.v1144){hint.dataset.v1144='1';hint.insertAdjacentHTML('afterbegin','<strong class="party-hint-title-v1144">예약할 인원을 선택하세요 · </strong>')}
+  }
+  if(typeof updateReservationPartyAvailability==='function'){
+    const baseUpdatePartyV1144=updateReservationPartyAvailability;
+    updateReservationPartyAvailability=function(festival,booth,time){
+      const availability=baseUpdatePartyV1144(festival,booth,time);renderPartyButtons(availability);return availability;
+    };
+  }
+
+  function reviewFor(participationId){
+    return (window.firebaseCache?.reviews||[]).find(item=>String(item.participation_id||item.participationId||'')===String(participationId));
+  }
+  function ensureReviewDialogV1144(){
+    let overlay=document.querySelector('#reviewDialogV1136');
+    if(!overlay){
+      overlay=document.createElement('div');overlay.id='reviewDialogV1136';overlay.className='review-dialog-v1136';overlay.hidden=true;
+      overlay.innerHTML='<section role="dialog" aria-modal="true"><header><div><p class="eyebrow dark">REVIEW</p><h2>부스 후기</h2></div><button type="button" data-close-review-v1136>×</button></header><p id="reviewBoothV1136"></p><textarea id="reviewTextV1136" maxlength="300" placeholder="참여한 부스에 대한 후기를 남겨주세요. (300자 이내)"></textarea><div class="review-actions-v1136"><button type="button" data-close-review-v1136>취소</button><button type="button" id="saveReviewV1136">저장</button></div></section>';
+      document.body.append(overlay);
+    }
+    const textarea=overlay.querySelector('#reviewTextV1136');
+    let rating=overlay.querySelector('#reviewRatingV1144');
+    if(!rating){
+      rating=document.createElement('div');rating.id='reviewRatingV1144';rating.className='review-rating-v1144';rating.innerHTML='<span>별점</span><div role="radiogroup" aria-label="별점 선택">'+[1,2,3,4,5].map(value=>`<button type="button" data-review-rating-v1144="${value}" aria-label="${value}점">★</button>`).join('')+'</div><b id="reviewRatingTextV1144">별점을 선택해주세요.</b>';
+      textarea?.insertAdjacentElement('beforebegin',rating);
+      rating.querySelectorAll('[data-review-rating-v1144]').forEach(button=>button.addEventListener('click',()=>setReviewRating(Number(button.dataset.reviewRatingV1144))));
+    }
+    if(!overlay.dataset.closeV1144){
+      overlay.dataset.closeV1144='1';overlay.querySelectorAll('[data-close-review-v1136]').forEach(button=>button.addEventListener('click',closeReviewV1144));overlay.addEventListener('click',event=>{if(event.target===overlay)closeReviewV1144()});
+    }
+    return overlay;
+  }
+  function setReviewRating(value){
+    const overlay=ensureReviewDialogV1144(),raw=Number(value||0),rating=Number.isInteger(raw)&&raw>=1&&raw<=5?raw:0;overlay.dataset.rating=String(rating);
+    overlay.querySelectorAll('[data-review-rating-v1144]').forEach(button=>{
+      const active=Number(button.dataset.reviewRatingV1144)<=rating;button.classList.toggle('selected',active);button.setAttribute('aria-checked',String(Number(button.dataset.reviewRatingV1144)===rating));
+    });
+    const text=overlay.querySelector('#reviewRatingTextV1144');if(text)text.textContent=rating?`${rating}점`:'별점을 선택해주세요.';
+  }
+  function closeReviewV1144(){const overlay=document.querySelector('#reviewDialogV1136');if(overlay)overlay.hidden=true}
+  function openReviewV1144(participationId){
+    const item=(window.firebaseCache?.participations||[]).find(row=>String(row.id)===String(participationId));if(!item)return;
+    const existing=reviewFor(participationId),overlay=ensureReviewDialogV1144();overlay.dataset.participationId=String(participationId);
+    overlay.querySelector('#reviewBoothV1136').textContent=`${item.festival_name||item.festivalName||'행사'} · ${item.booth_name||item.boothName||'부스'}`;
+    overlay.querySelector('#reviewTextV1136').value=existing?.review_text||existing?.review||'';setReviewRating(Number(existing?.rating||0));overlay.hidden=false;
+    setTimeout(()=>overlay.querySelector('#reviewTextV1136')?.focus(),30);
+  }
+  async function saveReviewV1144(){
+    const overlay=ensureReviewDialogV1144(),participationId=overlay.dataset.participationId,text=overlay.querySelector('#reviewTextV1136').value.trim(),rating=Number(overlay.dataset.rating||0),button=overlay.querySelector('#saveReviewV1136');
+    if(!Number.isInteger(rating)||rating<1||rating>5)return window.baemoonApp?.toast?.('별점을 먼저 선택해주세요.');
+    if(text.length<2)return window.baemoonApp?.toast?.('후기를 두 글자 이상 입력해주세요.');
+    button.disabled=true;
+    try{
+      const result=await window.baemoonFirebase.saveMyReview({participationId,review:text,rating});
+      const reviews=window.firebaseCache.reviews||(window.firebaseCache.reviews=[]),index=reviews.findIndex(item=>String(item.participation_id||item.participationId||'')===String(participationId));
+      if(index>=0)reviews[index]=result.review;else reviews.unshift(result.review);
+      closeReviewV1144();renderMyParticipationsV1144();reviewCache={at:0,data:null,promise:null};window.baemoonApp?.toast?.(`별점 ${rating}점 후기를 저장했습니다.`);
+    }catch(error){window.baemoonApp?.toast?.(error.message||'후기를 저장하지 못했습니다.')}finally{button.disabled=false}
+  }
+  function renderMyParticipationsV1144(){
+    const section=document.querySelector('#myParticipationSectionV1136'),list=section?.querySelector('#myParticipationListV1136'),count=section?.querySelector('#myParticipationCountV1136');if(!section||!list)return;
+    const current=window.baemoonApp?.session?.(),items=Array.isArray(window.firebaseCache?.participations)?window.firebaseCache.participations:[];
+    section.hidden=!current||!['student','guest'].includes(current.role);if(count)count.textContent=`${items.length}건`;
+    const signature=items.map(item=>{const review=reviewFor(item.id);return `${item.id}:${item.festival_name||item.festivalName}:${item.booth_name||item.boothName}:${review?.updated_at||review?.id||''}:${review?.rating||''}`}).join('|');
+    if(list.dataset.v1144Signature===signature&&(items.length?Boolean(list.querySelector('.my-participation-card-v1144')):Boolean(list.querySelector('.festival-empty'))))return;
+    const oldSignature=items.map(item=>{const review=reviewFor(item.id);return `${item.id}:${review?.id||review?.updated_at||''}`}).join('|');
+    list.dataset.v1144Signature=signature;list.dataset.v1143Signature=oldSignature;
+    list.innerHTML=items.length?items.map(item=>{
+      const review=reviewFor(item.id),festival=item.festival_name||item.festivalName||'행사',booth=item.booth_name||item.boothName||'부스';
+      return `<article class="my-participation-card-v1143 my-participation-card-v1144"><span class="participation-festival-v1144">${escV(festival)}</span><h3>${escV(booth)}</h3><button type="button" data-write-review-v1136="${escV(item.id)}">${review?'후기 수정':'후기 남기기'}</button></article>`;
+    }).join(''):'<div class="festival-empty">아직 참여 완료된 부스가 없습니다.</div>';
+  }
+
+  function identityForReview(item){
+    const raw=String(item.display_name||item.displayName||'참여자').trim();
+    if(item.participant_role==='guest'){
+      const code=String(item.guest_code||item.guestCode||raw.match(/#(\d{4,})/)?.[1]||'미등록');
+      return {id:`게스트 ${code.startsWith('#')?code:`#${code}`}`,name:raw.replace(/\s*#\d{4,}\s*$/,'')||'게스트'};
+    }
+    const match=raw.match(/^(\d{4,6})\s+(.+)$/);return match?{id:match[1],name:match[2]}:{id:'학번 미등록',name:raw};
+  }
+  function stars(rating){const value=Math.min(5,Math.max(1,Number(rating||5)));return `<span class="review-stars-v1144" aria-label="별점 ${value}점">${'★'.repeat(value)}${'☆'.repeat(5-value)}</span>`}
+  async function renderAdminReviewsV1144(force=false){
+    if(window.baemoonApp?.session?.()?.role!=='admin'||reviewRenderBusy)return;
+    if(!force&&Date.now()-lastReviewRender<1000)return;lastReviewRender=Date.now();
+    const section=document.querySelector('#adminReviewsV1136'),list=section?.querySelector('#adminReviewListV1136');if(!section||!list)return;
+    reviewRenderBusy=true;if(force)list.innerHTML='<div class="admin-empty">후기를 새로 불러오는 중…</div>';
+    try{
+      const payload=await window.baemoonFirebase.getAdminReviews({force}),items=payload.reviews||[];
+      const signature=items.map(item=>`${item.id}:${item.updated_at}:${item.review_text}:${item.rating}`).join('|');
+      if(!force&&list.dataset.v1144Signature===signature&&list.querySelector('.admin-review-summary-v1144'))return;
+      list.dataset.v1144Signature=signature;list.dataset.v1143Signature=items.map(item=>`${item.id}:${item.updated_at}:${item.review_text}`).join('|');
+      const title=section.querySelector('.admin-participation-head b'),sub=section.querySelector('.admin-participation-head small');if(title)title.textContent='학생·게스트 후기';if(sub)sub.textContent='학번과 이름을 누르면 별점·후기가 열립니다.';
+      list.innerHTML=items.length?items.map(item=>{
+        const person=identityForReview(item);
+        return `<article class="admin-review-card-v1143 admin-review-card-v1144 admin-review-square-v1201"><button type="button" class="admin-review-summary-v1144" data-toggle-review-v1144="${escV(item.id)}"><b>${escV(`${person.id} ${person.name}`.trim())}</b><i>후기 보기</i></button><div class="admin-review-detail-v1144" data-review-detail-v1144="${escV(item.id)}" hidden>${stars(item.rating)}<span>${escV(item.festival_name||'행사')} · ${escV(item.booth_name||'부스')}</span><p>${escV(item.review_text||'')}</p><button type="button" data-delete-review-v1143="${escV(item.id)}">후기 삭제</button></div></article>`;
+      }).join(''):'<div class="admin-empty">등록된 후기가 없습니다.</div>';
+    }catch(error){list.innerHTML=`<div class="admin-empty">${escV(error.message||'후기를 불러오지 못했습니다.')}</div>`}finally{reviewRenderBusy=false}
+  }
+
+  function decorateParticipationSquares(){
+    const list=document.querySelector('#participationListV1129');if(!list)return;
+    const articles=[...list.querySelectorAll(':scope > article')];if(!articles.length)return;
+    const signature=articles.map(article=>article.textContent.trim()).join('|');if(signature===lastParticipationDecoration&&articles.every(article=>article.classList.contains('participation-booth-square-v1144')))return;
+    lastParticipationDecoration=signature;
+    articles.forEach(article=>{
+      if(article.classList.contains('participation-booth-square-v1144'))return;
+      const booth=article.querySelector('b')?.textContent?.trim()||'부스',small=article.querySelector('small')?.textContent?.trim()||'행사',people=article.querySelector('strong')?.textContent?.trim()||'0명';
+      const [festival,...meta]=small.split('·').map(value=>value.trim());
+      article.classList.add('participation-booth-square-v1144');
+      article.innerHTML=`<button type="button"><span>${escV(festival||'행사')}</span><b>${escV(booth)}</b><strong>${escV(people)}</strong><small>${escV([festival,...meta].filter(Boolean).join(' · '))}</small><i>명단 보기</i></button>`;
+    });
+  }
+
+  function enhanceAdminQrV1144(){
+    const modal=document.querySelector('#qrScannerModal'),card=modal?.querySelector('.modal-card');if(!modal||!card)return;
+    modal.classList.add('admin-qr-modal-v1144');card.classList.add('admin-qr-card-v1144');
+    const title=card.querySelector('h2');if(title)title.textContent='관리자 QR 체크인';
+    let intro=card.querySelector('#adminQrIntroV1144');
+    if(!intro){
+      intro=document.createElement('div');intro.id='adminQrIntroV1144';intro.className='admin-qr-intro-v1144';intro.innerHTML='<b>호출된 학생의 QR을 확인하세요</b><span>① 카메라 열기 → ② QR 비추기 → ③ 체크인 결과 확인</span>';
+      (card.querySelector('.qr-guide-v1129')||card.querySelector('.modal-subtitle')||title)?.insertAdjacentElement('afterend',intro);
+    }
+    const videoWrap=card.querySelector('#qrScannerVideoWrap');if(videoWrap)videoWrap.classList.add('admin-qr-video-v1144');
+    const start=card.querySelector('#startQrScannerButton');if(start){start.classList.add('admin-qr-start-v1144');start.textContent='카메라로 QR 스캔 시작'}
+    const manual=card.querySelector('.manual-qr-fallback-v1134');if(manual){manual.classList.add('admin-qr-manual-v1144');const summary=manual.querySelector('summary');if(summary)summary.textContent='카메라가 안 될 때 체크인 코드 직접 입력'}
+    const result=card.querySelector('#qrCheckInResult');if(result)result.classList.add('admin-qr-result-v1144');
+    const input=card.querySelector('#manualQrCodeInput');if(input){input.placeholder='QR 아래 체크인 코드를 입력하세요';input.setAttribute('inputmode','text')}
+    const confirm=card.querySelector('#confirmQrCheckInButton');if(confirm)confirm.textContent='코드로 체크인 확인';
+  }
+
+  function deviceLabel(){
+    const ua=navigator.userAgent||'';
+    if(/KAKAOTALK/i.test(ua))return '카카오톡 내부 브라우저';
+    if(/iPhone|iPad|iPod/i.test(ua))return 'iPhone/iPad';
+    if(/Android/i.test(ua))return 'Android';return 'PC 브라우저';
+  }
+  function enhancePushDiagnosticsV1144(){
+    const box=document.querySelector('#backgroundPushV1142');if(!box)return;
+    box.classList.add('background-push-v1144');
+    let button=box.querySelector('#diagnoseBackgroundPushV1144');
+    if(!button){button=document.createElement('button');button.type='button';button.id='diagnoseBackgroundPushV1144';button.textContent='알림 진단';box.append(button)}
+    let result=box.querySelector('#pushDiagnosticsResultV1144');
+    if(!result){result=document.createElement('div');result.id='pushDiagnosticsResultV1144';result.className='push-diagnostics-result-v1144';result.hidden=true;box.append(result)}
+  }
+  async function runPushDiagnosticsV1144(button){
+    const result=document.querySelector('#pushDiagnosticsResultV1144');if(!result)return;
+    button.disabled=true;result.hidden=false;result.textContent='브라우저와 서버 연결을 확인하는 중…';
+    try{
+      const supported='Notification'in window&&'serviceWorker'in navigator&&'PushManager'in window;
+      const registration=supported?await navigator.serviceWorker.getRegistration():null;
+      const subscription=registration?await registration.pushManager.getSubscription():null;
+      let server=null;try{server=await window.baemoonFirebase.getPushDiagnostics()}catch(error){server={error:error.message}}
+      const ios=/iPhone|iPad|iPod/i.test(navigator.userAgent),standalone=Boolean(navigator.standalone||matchMedia('(display-mode: standalone)').matches),kakao=/KAKAOTALK/i.test(navigator.userAgent);
+      const rows=[
+        ['사용 환경',deviceLabel()],['HTTPS 보안 연결',window.isSecureContext?'정상':'실패'],['브라우저 Push 지원',supported?'지원':'미지원'],['알림 권한',supported?Notification.permission:'미지원'],['서비스 워커',registration?'등록됨':'미등록'],['현재 기기 구독',subscription?'저장됨':'없음'],['서버 VAPID 키',server?.configured?'설정됨':'미설정'],['서버 구독 수',server?.subscriptions===undefined?'-':`${server.subscriptions}개`],['서버 버전',server?.workerVersion||'-']
+      ];
+      let verdict='연결 상태를 확인해주세요.';
+      if(kakao)verdict='카카오톡 내부 브라우저는 사이트 밖 Web Push가 안정적으로 지원되지 않습니다. Chrome 또는 홈 화면 앱에서 다시 연결하세요.';
+      else if(ios&&!standalone)verdict='iPhone은 Safari에서 사이트를 홈 화면에 추가한 뒤, 그 홈 화면 앱 안에서 알림을 켜야 합니다.';
+      else if(!supported)verdict='이 브라우저는 Web Push를 지원하지 않습니다.';
+      else if(Notification.permission==='denied')verdict='브라우저 또는 휴대전화 설정에서 알림 권한이 차단되어 있습니다.';
+      else if(!subscription||Number(server?.subscriptions||0)<1)verdict='알림 켜기를 눌러 현재 기기의 구독을 서버에 다시 저장하세요.';
+      else if(server?.configured)verdict='브라우저·서버 구독은 정상입니다. 테스트 알림을 눌러 실제 수신을 확인하세요.';
+      result.innerHTML=`<b>${escV(verdict)}</b><div>${rows.map(([key,value])=>`<span>${escV(key)}<strong>${escV(value)}</strong></span>`).join('')}</div>`;
+    }catch(error){result.textContent=error.message||'알림 진단에 실패했습니다.'}finally{button.disabled=false}
+  }
+  async function testPushV1144(button){
+    button.disabled=true;
+    try{
+      const result=await window.baemoonFirebase.testPush();
+      const message=`푸시 서비스 전송 완료 · ${Number(result.sent||0)}/${Number(result.attempted||0)}개 성공${result.lastStatus?` · 응답 ${result.lastStatus}`:''}`;
+      window.baemoonApp?.toast?.(message);setTimeout(()=>document.querySelector('#diagnoseBackgroundPushV1144')?.click(),500);
+    }catch(error){window.baemoonApp?.toast?.(error.message||'테스트 알림 전송에 실패했습니다.');setTimeout(()=>document.querySelector('#diagnoseBackgroundPushV1144')?.click(),300)}finally{button.disabled=false}
+  }
+
+  function runUiV1144(){
+    if(window.__BAEMOON_FEATURES_1202__)window.__renderMyReviewsV1202?.();else renderMyParticipationsV1144();decorateParticipationSquares();enhanceAdminQrV1144();enhancePushDiagnosticsV1144();ensureReviewDialogV1144();
+    if(window.baemoonApp?.state?.screen==='festival'&&!window.__BAEMOON_FEATURES_1202__)renderAdminReviewsV1144(false);
+    document.documentElement.dataset.baemoonVersion=VERSION;
+    document.querySelectorAll('[data-app-version],.app-version').forEach(element=>{if(/v11\.(?:27|42|43)/.test(element.textContent||''))element.textContent=(element.textContent||'').replace(/v11\.(?:27|42|43)/g,'v11.44')});
+    const description=document.querySelector('#reservationBoothDescription');if(description)description.classList.add('reservation-description-v1144');
+  }
+
+  window.addEventListener('click',event=>{
+    const review=event.target.closest?.('[data-write-review-v1136]');
+    if(review){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();(window.__openReviewV1202||openReviewV1144)(review.dataset.writeReviewV1136);return}
+    const save=event.target.closest?.('#saveReviewV1136');
+    if(save){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();(window.__saveReviewV1202||saveReviewV1144)();return}
+    const deleteReview=event.target.closest?.('[data-delete-review-v1143]');
+    if(deleteReview){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();(async()=>{const ok=window.__bmAppConfirmV1130?await window.__bmAppConfirmV1130('후기 삭제','이 후기를 삭제할까요?','삭제'):confirm('후기를 삭제할까요?');if(!ok)return;deleteReview.disabled=true;try{await window.baemoonFirebase.deleteAdminReview(deleteReview.dataset.deleteReviewV1143);reviewCache={at:0,data:null,promise:null};await renderAdminReviewsV1144(true)}catch(error){window.baemoonApp?.toast?.(error.message||'후기 삭제에 실패했습니다.')}finally{deleteReview.disabled=false}})();return}
+    const toggle=event.target.closest?.('[data-toggle-review-v1144]');
+    if(toggle){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();if(window.__openAdminReviewV1202){window.__openAdminReviewV1202(toggle.dataset.toggleReviewV1144);return}const detail=document.querySelector(`[data-review-detail-v1144="${CSS.escape(toggle.dataset.toggleReviewV1144)}"]`);if(detail){detail.hidden=!detail.hidden;const label=toggle.querySelector('i');if(label)label.textContent=detail.hidden?'후기 보기':'후기 닫기';toggle.closest('article')?.classList.toggle('expanded-v1201',!detail.hidden)}return}
+    const refresh=event.target.closest?.('#refreshAdminReviewsV1136');
+    if(refresh){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();reviewCache={at:0,data:null,promise:null};renderAdminReviewsV1144(true);return}
+    const diagnose=event.target.closest?.('#diagnoseBackgroundPushV1144');
+    if(diagnose){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();const panel=document.querySelector('#pushDiagnosticsResultV1144');if(panel&&!panel.hidden){panel.hidden=true;return}runPushDiagnosticsV1144(diagnose);return}
+    const test=event.target.closest?.('#testBackgroundPushV1143');
+    if(test){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();testPushV1144(test);return}
+  },true);
+
+  if(typeof renderMy==='function'){
+    const baseRenderMyV1144=renderMy;
+    renderMy=function(){baseRenderMyV1144();if(window.__BAEMOON_FEATURES_1202__)window.__renderMyReviewsV1202?.();else renderMyParticipationsV1144()};
+    window.baemoonApp&&(window.baemoonApp.renderMy=renderMy);
+  }
+  if(typeof renderFestival==='function'){
+    const baseRenderFestivalV1144=renderFestival;
+    renderFestival=function(){baseRenderFestivalV1144();setTimeout(()=>{decorateParticipationSquares();if(!window.__BAEMOON_FEATURES_1202__)renderAdminReviewsV1144(false)},0)};
+    window.baemoonApp&&(window.baemoonApp.renderFestival=renderFestival);
+  }
+
+  let scheduled=false;
+  const observer=new MutationObserver(()=>{
+    if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{scheduled=false;runUiV1144()});
+  });
+
+  (async()=>{
+    try{
+      await waitReady();installApi();observer.observe(document.body,{childList:true,subtree:true});runUiV1144();
+      setInterval(()=>{
+        const role=window.baemoonApp?.session?.()?.role;
+        if(window.baemoonApp?.state?.screen==='festival'&&role!=='admin'){
+          const festival=typeof selectedFestival==='function'?selectedFestival():null;if(festival)renderBooths(festival);
+        }
+      },30000);
+      window.addEventListener('online',runUiV1144);document.addEventListener('visibilitychange',()=>{if(!document.hidden)runUiV1144()});
+      console.info('Baemoon v11.44 features ready');
+    }catch(error){console.error('v11.44 initialization failed:',error)}
+  })();
+})();
+
+/* ===== v12.02 festival guide · mobile push guidance · instant check-in · UI corrections ===== */
+(()=>{
+  'use strict';
+  const VERSION='12.03';
+  const esc12=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));
+  const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  let guideSaveBusy=false;
+  let deferredInstallPrompt=null;
+  let uiQueued=false;
+
+  function currentFestivalV1201(){
+    try{return typeof selectedFestival==='function'?selectedFestival():null}catch{return null}
+  }
+  function currentBannerV1201(){
+    try{const items=typeof homeBanners==='function'?homeBanners():[];return items?.[Number(state?.homeBannerIndex||0)]||items?.[0]||null}catch{return null}
+  }
+  function setVersionV1201(){
+    document.documentElement.dataset.baemoonVersion=VERSION;
+    document.querySelectorAll('[data-app-version],.app-version,.firebase-beta-status+small,.auth-welcome-card>small').forEach(element=>{
+      const text=element.textContent||'';
+      if(/v11\.(?:27|33|34|35|36|42|43|44)/.test(text))element.textContent=text.replace(/v11\.(?:27|33|34|35|36|42|43|44)/g,'v12.03');
+    });
+  }
+
+  function ensureFestivalHubCollapseV1201(){
+    const section=document.querySelector('#festivalHubAdminV1143');
+    if(!section||section.hidden)return;
+    section.classList.add('festival-hub-admin-v1201');
+    const heading=section.querySelector(':scope>.section-heading');
+    if(!heading)return;
+    let controls=heading.querySelector('.festival-hub-toggle-actions-v1201');
+    if(!controls){
+      controls=document.createElement('div');controls.className='festival-hub-toggle-actions-v1201';
+      const add=heading.querySelector('#addFestivalHubV1143');
+      const toggle=document.createElement('button');toggle.type='button';toggle.id='toggleFestivalHubAdminV1201';
+      controls.append(toggle);if(add)controls.append(add);heading.append(controls);
+      toggle.addEventListener('click',()=>{
+        const collapsed=section.classList.toggle('collapsed-v1201');
+        try{sessionStorage.setItem('bm-festival-hub-collapsed-v1201',collapsed?'1':'0')}catch{}
+        updateFestivalHubToggleV1201();
+      });
+    }
+    if(!section.dataset.collapseLoadedV1201){
+      section.dataset.collapseLoadedV1201='1';
+      try{section.classList.toggle('collapsed-v1201',sessionStorage.getItem('bm-festival-hub-collapsed-v1201')==='1')}catch{}
+    }
+    updateFestivalHubToggleV1201();
+  }
+  function updateFestivalHubToggleV1201(){
+    const section=document.querySelector('#festivalHubAdminV1143'),button=document.querySelector('#toggleFestivalHubAdminV1201');if(!section||!button)return;
+    button.textContent=section.classList.contains('collapsed-v1201')?'관리 창 열기':'관리 창 닫기';
+    button.setAttribute('aria-expanded',String(!section.classList.contains('collapsed-v1201')));
+  }
+
+  function ensureFestivalDetailCollapseV1201(){
+    const section=document.querySelector('#festivalAdminDetailV1136');if(!section||section.hidden)return;
+    section.classList.add('festival-admin-detail-v1201');
+    const heading=section.querySelector(':scope>.section-heading');if(!heading)return;
+    let button=heading.querySelector('#toggleFestivalAdminDetailV1201');
+    if(!button){
+      button=document.createElement('button');button.type='button';button.id='toggleFestivalAdminDetailV1201';button.className='ghost-button';heading.append(button);
+      button.addEventListener('click',()=>{
+        const collapsed=section.classList.toggle('collapsed-v1201');
+        try{sessionStorage.setItem('bm-festival-detail-collapsed-v1201',collapsed?'1':'0')}catch{}
+        updateFestivalDetailToggleV1201();
+      });
+    }
+    if(!section.dataset.collapseLoadedV1201){
+      section.dataset.collapseLoadedV1201='1';
+      try{section.classList.toggle('collapsed-v1201',sessionStorage.getItem('bm-festival-detail-collapsed-v1201')==='1')}catch{}
+    }
+    updateFestivalDetailToggleV1201();
+  }
+  function updateFestivalDetailToggleV1201(){
+    const section=document.querySelector('#festivalAdminDetailV1136'),button=document.querySelector('#toggleFestivalAdminDetailV1201');if(!section||!button)return;
+    button.textContent=section.classList.contains('collapsed-v1201')?'세부 관리 열기':'세부 관리 닫기';
+    button.setAttribute('aria-expanded',String(!section.classList.contains('collapsed-v1201')));
+  }
+
+  function updateFestivalManagerLabelsV1201(){
+    const festival=currentFestivalV1201();
+    const visibleButton=document.querySelector('#toggleFestivalVisibleV1135');
+    if(visibleButton&&festival)visibleButton.textContent=festival.visible?'비공개 전환':'공개 전환';
+    const edit=document.querySelector('#editFestivalButton');if(edit){edit.textContent='기본 정보 수정';edit.classList.add('festival-basic-edit-v1201')}
+  }
+
+  function reorderFoodActionsV1201(){
+    document.querySelectorAll('.restaurant-manager-head .item-actions').forEach(row=>{
+      const edit=row.querySelector('[data-edit-restaurant]'),add=row.querySelector('[data-add-food]'),remove=row.querySelector('[data-delete-restaurant]');
+      if(edit)row.append(edit);if(add)row.append(add);if(remove)row.append(remove);
+    });
+  }
+
+  function ensureFestivalGuideEditorV1201(){
+    const overlay=document.querySelector('#festivalEditor'),description=document.querySelector('#festivalEditDescription');if(!overlay||!description)return;
+    if(!state.pendingImage.festivalGuide)state.pendingImage.festivalGuide='';
+    let field=overlay.querySelector('#festivalGuideImageFieldV1201');
+    if(!field){
+      field=document.createElement('div');field.id='festivalGuideImageFieldV1201';field.className='festival-guide-image-field-v1201';
+      field.innerHTML='<label>축제 안내 사진<input type="file" accept="image/*" id="festivalGuideImageV1201"></label><small>축제 상세보기에서 소개 글과 함께 표시됩니다.</small><div class="festival-guide-image-preview-v1201" id="festivalGuideImagePreviewV1201" hidden><img id="festivalGuideImagePreviewImgV1201" alt="축제 안내 사진 미리보기"><button type="button" id="removeFestivalGuideImageV1201">사진 제거</button></div>';
+      description.closest('label')?.insertAdjacentElement('afterend',field);
+      field.querySelector('#festivalGuideImageV1201').addEventListener('change',async event=>{
+        const file=event.target.files?.[0];if(!file)return;
+        try{state.pendingImage.festivalGuide=await compressImage(file);renderFestivalGuidePreviewV1201();toast('축제 안내 사진을 추가했습니다.')}catch(error){toast(error.message||'사진을 처리하지 못했습니다.')}
+      });
+      field.querySelector('#removeFestivalGuideImageV1201').addEventListener('click',()=>{state.pendingImage.festivalGuide='';field.querySelector('#festivalGuideImageV1201').value='';renderFestivalGuidePreviewV1201()});
+    }
+    renderFestivalGuidePreviewV1201();
+  }
+  function renderFestivalGuidePreviewV1201(){
+    const box=document.querySelector('#festivalGuideImagePreviewV1201'),img=document.querySelector('#festivalGuideImagePreviewImgV1201');if(!box||!img)return;
+    const src=imageSrc(state.pendingImage.festivalGuide||'');box.hidden=!src;if(src)img.src=src;else img.removeAttribute('src');
+  }
+  function syncFestivalEditorImageV1201(){
+    ensureFestivalGuideEditorV1201();
+    const festival=state.editingFestivalId?festivals().find(item=>item.id===state.editingFestivalId):null;
+    state.pendingImage.festivalGuide=festival?.guideImage||'';renderFestivalGuidePreviewV1201();
+  }
+  async function saveFestivalV1201(button){
+    if(guideSaveBusy)return;guideSaveBusy=true;const original=button.textContent;button.disabled=true;button.textContent='행사 저장 중…';
+    try{
+      const payload={
+        name:document.querySelector('#festivalEditName')?.value.trim()||'',year:Number(document.querySelector('#festivalEditYear')?.value)||new Date().getFullYear(),
+        short:document.querySelector('#festivalEditShort')?.value.trim()||'',tagline:document.querySelector('#festivalEditTagline')?.value.trim()||'',description:document.querySelector('#festivalEditDescription')?.value.trim()||'',
+        guideImage:state.pendingImage.festivalGuide||'',start:document.querySelector('#festivalEditStart')?.value||'',end:document.querySelector('#festivalEditEnd')?.value||'',
+        color:document.querySelector('#festivalEditColor')?.value||'#ff6038',visible:Boolean(document.querySelector('#festivalEditVisible')?.checked),featured:Boolean(document.querySelector('#festivalEditFeatured')?.checked)
+      };
+      if(!payload.name)return toast('행사 이름을 입력해주세요.');
+      let items=festivals();if(payload.featured)items=items.map(item=>({...item,featured:false}));
+      if(state.editingFestivalId)items=items.map(item=>item.id===state.editingFestivalId?{...item,...payload}:item);
+      else{items.push({id:id(),...payload,booths:[],menus:[],foodVendors:[],events:[]});state.managerFestivalId=null}
+      await saveFestivals(items);closeOverlay('festivalEditor');renderAdmin();renderHome();if(state.screen==='festivals')renderFestivalHub();toast('행사 안내와 사진을 저장했습니다.');
+    }catch(error){toast(firebaseFriendlyMessage(error))}finally{guideSaveBusy=false;button.disabled=false;button.textContent=original||'행사 저장'}
+  }
+
+  function ensureFestivalGuideDialogV1201(){
+    let overlay=document.querySelector('#festivalGuideDialogV1201');
+    if(!overlay){
+      overlay=document.createElement('div');overlay.id='festivalGuideDialogV1201';overlay.className='overlay festival-guide-dialog-v1201';
+      overlay.innerHTML='<div class="modal-card"><button class="modal-close" type="button" data-close="festivalGuideDialogV1201">×</button><div id="festivalGuideDialogImageV1201" class="festival-guide-dialog-image-v1201" hidden></div><span class="card-tag">FESTIVAL GUIDE</span><h2 id="festivalGuideDialogTitleV1201"></h2><p id="festivalGuideDialogMetaV1201"></p><div id="festivalGuideDialogBodyV1201"></div></div>';
+      document.body.append(overlay);overlay.addEventListener('click',event=>{if(event.target===overlay)closeOverlay(overlay.id)});
+    }
+    return overlay;
+  }
+  function openFestivalGuideV1201(){
+    const festival=currentFestivalV1201();if(!festival)return;
+    const overlay=ensureFestivalGuideDialogV1201(),image=overlay.querySelector('#festivalGuideDialogImageV1201'),src=imageSrc(festival.guideImage||'');
+    image.hidden=!src;image.style.backgroundImage=src?`url("${src}")`:'';
+    overlay.querySelector('#festivalGuideDialogTitleV1201').textContent=`${festival.name||'행사'} 상세 안내`;
+    overlay.querySelector('#festivalGuideDialogMetaV1201').textContent=[festival.start,festival.end].filter(Boolean).join(' ~ ');
+    overlay.querySelector('#festivalGuideDialogBodyV1201').textContent=festival.description||'등록된 상세 안내가 없습니다.';openOverlay(overlay.id);
+  }
+  function decorateFestivalGuideV1201(){
+    const description=document.querySelector('#festivalDescription'),card=description?.closest('.festival-description-card');if(!description||!card)return;
+    description.classList.add('festival-description-excerpt-v1201');
+    let button=card.querySelector('#festivalMoreV1201');
+    if(!button){button=document.createElement('button');button.type='button';button.id='festivalMoreV1201';button.className='festival-more-v1201';button.textContent='상세보기';button.addEventListener('click',openFestivalGuideV1201);card.append(button)}
+    button.hidden=!(currentFestivalV1201()?.description||currentFestivalV1201()?.guideImage);
+  }
+
+  function ensureHomeBannerDialogV1201(){
+    let overlay=document.querySelector('#homeBannerDetailV1201');
+    if(!overlay){
+      overlay=document.createElement('div');overlay.id='homeBannerDetailV1201';overlay.className='overlay home-banner-detail-v1201';
+      overlay.innerHTML='<div class="modal-card"><button class="modal-close" type="button" data-close="homeBannerDetailV1201">×</button><div class="home-banner-detail-image-v1201" id="homeBannerDetailImageV1201" hidden></div><span class="card-tag" id="homeBannerDetailKickerV1201"></span><h2 id="homeBannerDetailTitleV1201"></h2><p id="homeBannerDetailSubtitleV1201"></p><a id="homeBannerExternalLinkV1201" target="_blank" rel="noopener noreferrer" hidden>관련 페이지 열기</a></div>';
+      document.body.append(overlay);overlay.addEventListener('click',event=>{if(event.target===overlay)closeOverlay(overlay.id)});
+    }
+    return overlay;
+  }
+  window.__openHomeBannerDetailV1201=()=>{
+    const item=currentBannerV1201();if(!item)return;
+    const overlay=ensureHomeBannerDialogV1201(),src=imageSrc(item.image||''),image=overlay.querySelector('#homeBannerDetailImageV1201');
+    image.hidden=!src;image.style.backgroundImage=src?`url("${src}")`:'';
+    overlay.querySelector('#homeBannerDetailKickerV1201').textContent=item.kicker||'BAEMOON SCHOOL APP';
+    overlay.querySelector('#homeBannerDetailTitleV1201').textContent=String(item.title||'학교생활 안내').replaceAll('\n',' ');
+    overlay.querySelector('#homeBannerDetailSubtitleV1201').textContent=item.subtitle||'등록된 상세 설명이 없습니다.';
+    const link=overlay.querySelector('#homeBannerExternalLinkV1201');link.hidden=!item.link;if(item.link)link.href=item.link;openOverlay(overlay.id);
+  };
+
+  function fixFestivalTabsV1201(button){
+    const tabs=document.querySelector('#festivalTabs');if(!tabs||!button)return;
+    tabs.querySelectorAll('button[data-tab]').forEach(item=>item.classList.toggle('active',item===button));
+    const ids={overview:'festivalSectionOverviewV1136',reserve:'festivalSectionReserveV1136',food:'festivalSectionFoodV1136',events:'festivalSectionEventsV1136'};
+    const panel=document.getElementById(ids[button.dataset.tab])||document.querySelector(`.festival-panel[data-panel="${CSS.escape(button.dataset.tab||'overview')}"]`);
+    panel?.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+  function resetFestivalTabV1201(){
+    const tabs=document.querySelector('#festivalTabs');if(!tabs)return;const overview=tabs.querySelector('[data-tab="overview"]');
+    tabs.querySelectorAll('button').forEach(item=>item.classList.toggle('active',item===overview));
+  }
+
+  async function refreshAfterPushV1201(payload={}){
+    if(payload.type!=='check-in'&&payload.type!=='queue-call')return;
+    const current=window.baemoonApp?.session?.();if(!current?.uid||!['student','guest'].includes(current.role))return;
+    try{
+      const overview=await window.baemoonFirebase?.getMyServerOverview?.({force:true});
+      if(overview){
+        window.firebaseCache.reservations=(overview.reservations||[]).map(typeof normalizeReservation==='function'?normalizeReservation:value=>value);
+        window.firebaseCache.queueEntries=(overview.queue||[]).map(typeof normalizeQueue==='function'?normalizeQueue:value=>value);
+        window.firebaseCache.participations=overview.participations||window.firebaseCache.participations||[];
+      }
+      window.baemoonApp?.renderHomeReservations?.();window.baemoonApp?.renderMy?.();
+      if(payload.type==='check-in'){
+        window.__closeReservationQrV1202?.();
+      }
+    }catch(error){console.warn('v12.02 push refresh failed',error)}
+  }
+
+  function enhancePushPanelV1201(){
+    const box=document.querySelector('#backgroundPushV1142');if(!box)return;
+    box.classList.add('background-push-v1201');
+    let note=box.querySelector('#pushEnvironmentNoteV1201');
+    if(!note){note=document.createElement('div');note.id='pushEnvironmentNoteV1201';note.className='push-environment-note-v1201';box.append(note)}
+    const ua=navigator.userAgent||'',kakao=/KAKAOTALK/i.test(ua),ios=/iPhone|iPad|iPod/i.test(ua),standalone=Boolean(navigator.standalone||matchMedia('(display-mode: standalone)').matches);
+    const supported=window.isSecureContext&&'Notification'in window&&'serviceWorker'in navigator&&'PushManager'in window;
+    if(kakao)note.innerHTML='<b>카카오톡에서는 사이트 종료 후 알림을 보장할 수 없습니다.</b><span>오른쪽 위 메뉴에서 Chrome·Safari로 열거나 홈 화면 앱으로 설치한 뒤 알림을 켜주세요.</span>';
+    else if(ios&&!standalone)note.innerHTML='<b>iPhone은 Safari 홈 화면 앱에서만 사이트 밖 알림을 켤 수 있습니다.</b><span>Safari 공유 버튼 → 홈 화면에 추가 → 추가된 배문고 앱에서 알림 켜기 순서로 진행하세요.</span>';
+    else if(!supported)note.innerHTML='<b>현재 앱 내부 브라우저는 Web Push를 지원하지 않습니다.</b><span>일반 Chrome·Safari 또는 설치된 홈 화면 앱에서 접속해주세요.</span>';
+    else note.innerHTML='<b>이 환경은 Web Push를 지원합니다.</b><span>알림 권한과 서버 구독이 모두 정상일 때 사이트 탭을 닫아도 호출 알림을 받을 수 있습니다.</span>';
+    let install=box.querySelector('#installPwaV1201');
+    if(deferredInstallPrompt&&!standalone&&!install){install=document.createElement('button');install.type='button';install.id='installPwaV1201';install.textContent='홈 화면 앱 설치';box.append(install);install.addEventListener('click',async()=>{try{await deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice}catch{}deferredInstallPrompt=null;install.remove()})}
+    let copy=box.querySelector('#copyPushUrlV1201');
+    if((kakao||!supported)&&!copy){copy=document.createElement('button');copy.type='button';copy.id='copyPushUrlV1201';copy.textContent='사이트 주소 복사';box.append(copy);copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(location.href);toast('사이트 주소를 복사했습니다. Chrome 또는 Safari에 붙여넣어주세요.')}catch{toast('주소창의 사이트 주소를 복사해주세요.')}})}
+  }
+
+  function updateAdminReviewTitleV1201(){
+    const section=document.querySelector('#adminReviewsV1136');if(!section)return;
+    const sub=section.querySelector('.admin-participation-head small');if(sub)sub.textContent='학번과 이름만 표시됩니다. 카드를 누르면 별점과 후기 내용이 열립니다.';
+  }
+
+  function runUiV1201(){
+    if(uiQueued)return;uiQueued=true;requestAnimationFrame(()=>{
+      uiQueued=false;setVersionV1201();ensureFestivalHubCollapseV1201();ensureFestivalDetailCollapseV1201();updateFestivalManagerLabelsV1201();reorderFoodActionsV1201();ensureFestivalGuideEditorV1201();decorateFestivalGuideV1201();enhancePushPanelV1201();updateAdminReviewTitleV1201();
+      const action=document.querySelector('#homeHeroAction');if(action){action.textContent='상세보기';action.href='#';action.hidden=false}
+    });
+  }
+
+  window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();deferredInstallPrompt=event;runUiV1201()});
+  window.addEventListener('appinstalled',()=>{deferredInstallPrompt=null;runUiV1201()});
+  navigator.serviceWorker?.addEventListener?.('message',event=>{if(event.data?.type==='PUSH_RECEIVED')refreshAfterPushV1201(event.data.payload||{})});
+  window.addEventListener('baemoon:push-received',event=>refreshAfterPushV1201(event.detail||{}));
+
+  window.addEventListener('click',event=>{
+    const save=event.target.closest?.('#saveFestivalButton');
+    if(save){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();saveFestivalV1201(save);return}
+    const tab=event.target.closest?.('#festivalTabs button[data-tab]');
+    if(tab){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();fixFestivalTabsV1201(tab);return}
+    const openFestival=event.target.closest?.('[data-open-festival],#festivalNavButton');
+    if(openFestival)setTimeout(resetFestivalTabV1201,30);
+  },true);
+
+  document.addEventListener('click',event=>{
+    if(event.target.closest('#addFestivalButton,#addFestivalHubV1143,[data-edit-festival-hub-v1143],#editFestivalButton'))setTimeout(syncFestivalEditorImageV1201,0);
+  });
+
+  const observer=new MutationObserver(runUiV1201);
+  (async()=>{
+    for(let i=0;i<80&&!document.body;i++)await wait(50);
+    observer.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class','hidden']});
+    runUiV1201();setInterval(updateFestivalManagerLabelsV1201,1200);
+    console.info('Baemoon v12.03 features ready');
+  })();
+})();
+
+/* v12.02 active QR check-in confirmation fallback: only polls while the student's QR is open. */
+(()=>{
+  let busy=false,lastShown='';
+  setInterval(async()=>{
+    const modal=document.querySelector('#reservationQrModal.open');
+    const current=window.baemoonApp?.session?.();
+    if(!modal||busy||!current?.uid||!['student','guest'].includes(current.role)||!window.baemoonFirebase?.getMyServerOverview)return;
+    const reservationId=String(window.baemoonApp?.state?.currentReservationId||'');if(!reservationId)return;
+    busy=true;
+    try{
+      const overview=await window.baemoonFirebase.getMyServerOverview({force:true});
+      const participation=(overview.participations||[]).find(item=>String(item.reservation_id||item.reservationId||'')===reservationId);
+      if(!participation)return;
+      const key=String(participation.id||reservationId);const status=document.querySelector('#reservationQrStatus');
+      if(status)status.textContent=`체크인 완료 · ${new Date(Number(participation.checked_in_at||participation.checkedInAt||Date.now())).toLocaleString('ko-KR')}`;
+      window.firebaseCache.participations=overview.participations||[];window.firebaseCache.reservations=(overview.reservations||[]).map(typeof normalizeReservation==='function'?normalizeReservation:value=>value);window.firebaseCache.queueEntries=(overview.queue||[]).map(typeof normalizeQueue==='function'?normalizeQueue:value=>value);
+      window.baemoonApp?.renderHomeReservations?.();window.baemoonApp?.renderMy?.();
+      if(lastShown!==key){lastShown=key;window.__closeReservationQrV1202?.()}
+    }catch{}finally{busy=false}
+  },2000);
+})();
+
+/* ===== v12.02 login persistence · latest-device push · compact reviews · UI refinements ===== */
+(()=>{
+  'use strict';
+  if(window.__BAEMOON_FEATURES_1202__)return;
+  window.__BAEMOON_FEATURES_1202__=true;
+  const VERSION='12.03';
+  const API_BASE='https://baemoon-reservation-server.timon20091220.workers.dev';
+  const KEEP_KEY='bm_login_keep_v1202';
+  const DEVICE_KEY='bm_push_device_id_v1202';
+  const SESSION_KEY='bm_push_session_id_v1202';
+  const NOTIFY_DEFAULT_KEY='bm_notify_default_v1202';
+  const esc1202=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+  const sleep1202=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  let modulesPromise1202=null,ratingCache1202={at:0,festivalId:'',data:[]},reviewWriteId1202='',reviewWriteRating1202=0,reviewRenderBusy1202=false;
+
+  function randomId1202(prefix){return `${prefix}-${crypto.randomUUID?.()||Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`}
+  function deviceId1202(){let value='';try{value=localStorage.getItem(DEVICE_KEY)||'';if(!value){value=randomId1202('device');localStorage.setItem(DEVICE_KEY,value)}}catch{value=randomId1202('device')}return value}
+  function sessionId1202(){let value='';try{value=sessionStorage.getItem(SESSION_KEY)||'';if(!value){value=randomId1202('session');sessionStorage.setItem(SESSION_KEY,value)}}catch{value=randomId1202('session')}return value}
+  async function modules1202(){
+    if(!modulesPromise1202)modulesPromise1202=Promise.all([
+      import('https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js'),
+      import('https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js')
+    ]).then(([app,auth])=>({app,auth}));
+    return modulesPromise1202;
+  }
+  async function api1202(path,{method='GET',body,retry=true}={}){
+    const {app,auth}=await modules1202(),user=auth.getAuth(app.getApp()).currentUser;
+    if(!user)throw new Error('로그인이 필요합니다.');
+    const token=await user.getIdToken(false);
+    let response;
+    try{response=await fetch(`${API_BASE}${path}`,{method,cache:'no-store',headers:{Authorization:`Bearer ${token}`,Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)})}
+    catch(error){if(retry){await sleep1202(250);return api1202(path,{method,body,retry:false})}throw new Error('예약 서버에 연결할 수 없습니다.')}
+    let payload={};try{payload=await response.json()}catch{}
+    if(response.status===401&&retry){await user.getIdToken(true);return api1202(path,{method,body,retry:false})}
+    if(!response.ok||payload?.ok===false){const error=new Error(payload?.error?.message||`예약 서버 오류 (${response.status})`);error.code=payload?.error?.code;throw error}
+    return payload;
+  }
+  function bytes1202(value){const pad='='.repeat((4-value.length%4)%4),base64=(value+pad).replace(/-/g,'+').replace(/_/g,'/');return Uint8Array.from(atob(base64),c=>c.charCodeAt(0))}
+  async function registration1202(){
+    if(!('serviceWorker'in navigator))throw new Error('이 브라우저는 앱 알림을 지원하지 않습니다.');
+    return (await window.baemoonApp?.ensureServiceWorker?.())||navigator.serviceWorker.ready;
+  }
+  async function saveCurrentPush1202({requestPermission=false}={}){
+    if(!window.isSecureContext||!('Notification'in window)||!('PushManager'in window))throw new Error('현재 브라우저에서는 앱 알림을 사용할 수 없습니다.');
+    if(Notification.permission==='denied')throw new Error('휴대전화 또는 브라우저 설정에서 알림 권한을 허용해주세요.');
+    if(Notification.permission!=='granted'){
+      if(!requestPermission)throw new Error('앱 알림 스위치를 눌러 알림 권한을 허용해주세요.');
+      const permission=await Notification.requestPermission();if(permission!=='granted')throw new Error('알림 권한이 허용되지 않았습니다.');
+    }
+    const registration=await registration1202();
+    let subscription=await registration.pushManager.getSubscription();
+    if(!subscription){const key=await api1202('/api/push/public-key').catch(()=>window.baemoonFirebase?.getPushPublicKey?.());if(!key?.publicKey)throw new Error('알림 서버 키가 설정되지 않았습니다.');subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:bytes1202(key.publicKey)})}
+    await api1202('/api/push/subscribe',{method:'POST',body:{subscription:subscription.toJSON(),deviceId:deviceId1202(),sessionId:sessionId1202(),userAgent:navigator.userAgent}});
+    await window.baemoonFirebase?.setNotificationPreference?.(true).catch(()=>{});
+    return subscription;
+  }
+  async function deactivatePush1202(){
+    let endpoint='';try{endpoint=(await (await registration1202()).pushManager.getSubscription())?.endpoint||''}catch{}
+    try{await api1202('/api/push/deactivate',{method:'POST',body:{endpoint,deviceId:deviceId1202(),sessionId:sessionId1202()}})}catch(error){console.warn('push deactivate failed',error)}
+  }
+  async function registerLatestDevice1202(){
+    let endpoint='';try{endpoint=(await (await registration1202()).pushManager.getSubscription())?.endpoint||''}catch{}
+    return api1202('/api/push/session',{method:'POST',body:{endpoint,deviceId:deviceId1202(),sessionId:sessionId1202()}});
+  }
+  function installApi1202(){
+    const api=window.baemoonFirebase;if(!api)return;
+    api.savePushSubscription=subscription=>api1202('/api/push/subscribe',{method:'POST',body:{subscription,deviceId:deviceId1202(),sessionId:sessionId1202(),userAgent:navigator.userAgent}});
+    api.removePushSubscription=(endpoint='')=>api1202('/api/push/unsubscribe',{method:'POST',body:{endpoint,deviceId:deviceId1202(),sessionId:sessionId1202()}});
+    api.testPush=()=>api1202('/api/push/test',{method:'POST',body:{deviceId:deviceId1202(),sessionId:sessionId1202()}});
+    api.getReviewSummary=festivalId=>api1202(`/api/reviews/summary${festivalId?`?festivalId=${encodeURIComponent(festivalId)}`:''}`);
+    api.callQueueEntry=queueId=>api1202('/api/admin/queue/call',{method:'POST',body:{queueId}});
+    api.callNextQueue=payload=>api1202('/api/admin/queue/call-next',{method:'POST',body:payload});
+  }
+
+  function closeQr1202(){
+    try{closeOverlay('reservationQrModal')}catch{document.querySelector('#reservationQrModal')?.classList.remove('open')}
+    const image=document.querySelector('#reservationQrImage');if(image){image.src='';image.hidden=true}
+    const code=document.querySelector('#reservationQrCodeText');if(code)code.textContent='';
+    if(window.baemoonApp?.state)window.baemoonApp.state.currentReservationId=null;
+  }
+  window.__closeReservationQrV1202=closeQr1202;
+
+  function ensureKeepLogin1202(){
+    if(localStorage.getItem(KEEP_KEY)===null)localStorage.setItem(KEEP_KEY,'1');
+    const checked=localStorage.getItem(KEEP_KEY)!=='0';
+    ['#studentLoginModal','#adminLoginModal','#guestConfirmModal'].forEach(selector=>{
+      const modal=document.querySelector(selector),card=modal?.querySelector('.modal-card');if(!card||card.querySelector('.keep-login-v1202'))return;
+      const submit=card.querySelector('#studentLoginSubmit,#adminLoginSubmit,#confirmGuestEntry,button[type="submit"],.primary-button');
+      const label=document.createElement('label');label.className='keep-login-v1202';label.innerHTML=`<input type="checkbox" ${checked?'checked':''}><span><b>로그인 계속 유지</b><small>이 브라우저에서 사이트를 다시 열어도 로그인 상태를 유지합니다.</small></span>`;
+      (submit||card.lastElementChild)?.insertAdjacentElement('beforebegin',label);
+      label.querySelector('input').addEventListener('change',event=>{const keep=event.target.checked;localStorage.setItem(KEEP_KEY,keep?'1':'0');document.querySelectorAll('.keep-login-v1202 input').forEach(input=>input.checked=keep);window.baemoonSetLoginPersistence?.(keep).catch?.(()=>{})});
+    });
+  }
+  function accountLabel1202(){
+    const current=window.baemoonApp?.session?.()||{};
+    if(current.role==='student')return `${current.studentKey||current.studentId||current.id||''} ${current.name||''}`.trim();
+    if(current.role==='guest')return `${current.name||current.displayName||'게스트'}${current.guestCode?` #${current.guestCode}`:''}`;
+    if(current.role==='admin')return current.name||current.adminId||'관리자';return '현재 계정';
+  }
+  let logoutBusy1202=false;
+  window.addEventListener('click',event=>{
+    const button=event.target.closest?.('#logoutButton,#adminLogout');if(!button||logoutBusy1202)return;
+    event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();
+    (async()=>{logoutBusy1202=true;try{const ok=window.__bmAppConfirmV1130?await window.__bmAppConfirmV1130('로그아웃 하시겠습니까?',`${accountLabel1202()} 계정에서 로그아웃합니다.`,'로그아웃'):confirm(`로그아웃 하시겠습니까?\n${accountLabel1202()}`);if(!ok)return;await deactivatePush1202();await window.baemoonAuth?.logout?.()}catch(error){window.baemoonApp?.toast?.(error.message||'로그아웃하지 못했습니다.')}finally{logoutBusy1202=false}})();
+  },true);
+
+  function integrateNotifications1202(){
+    const legacyPush=document.querySelector('#backgroundPushV1142');if(legacyPush){legacyPush.hidden=true;legacyPush.classList.add('legacy-push-hidden-v1202')}
+    const row=document.querySelector('.notification-settings');if(!row)return;
+    row.parentElement?.querySelector('#notificationToolsV1202')?.remove();
+    const toggle=row.querySelector('#notificationToggle');
+    if(toggle&&!toggle.dataset.v1202){toggle.dataset.v1202='1';if(localStorage.getItem(NOTIFY_DEFAULT_KEY)===null){localStorage.setItem(NOTIFY_DEFAULT_KEY,'1');toggle.checked=true;window.baemoonFirebase?.setNotificationPreference?.(true).catch(()=>{})}}
+    const logoutText=document.querySelector('#logoutButton b');if(logoutText)logoutText.textContent='로그아웃';
+  }
+  async function toggleNotifications1202(enabled){
+    const toggle=document.querySelector('#notificationToggle');if(toggle)toggle.disabled=true;
+    try{
+      if(enabled){
+        localStorage.setItem(NOTIFY_DEFAULT_KEY,'1');
+        await window.baemoonFirebase?.setNotificationPreference?.(true).catch(()=>{});
+        if('Notification'in window&&Notification.permission==='denied'){
+          if(toggle)toggle.checked=true;
+          window.baemoonApp?.toast?.('앱 안의 알림은 켜졌습니다. 사이트 밖 알림은 브라우저 설정에서 이 사이트의 알림을 허용하면 사용할 수 있습니다.');
+          return;
+        }
+        try{await saveCurrentPush1202({requestPermission:true});window.baemoonApp?.toast?.('앱 알림을 켰습니다.')}
+        catch(error){if(toggle)toggle.checked=true;window.baemoonApp?.toast?.(`앱 안의 알림은 켜졌습니다. ${error.message||'사이트 밖 알림 연결은 지원되는 브라우저에서 다시 시도해주세요.'}`);return}
+      }else{
+        localStorage.setItem(NOTIFY_DEFAULT_KEY,'0');
+        await deactivatePush1202();
+        await window.baemoonFirebase?.setNotificationPreference?.(false).catch(()=>{});
+        window.baemoonApp?.toast?.('앱 알림을 껐습니다.');
+      }
+      if(toggle)toggle.checked=enabled;
+    }finally{if(toggle)toggle.disabled=false}
+  }
+  async function diagnose1202(){
+    const panel=document.querySelector('#notificationDiagnosticV1202');if(!panel)return;
+    if(!panel.hidden){panel.hidden=true;panel.innerHTML='';return}
+    panel.hidden=false;panel.textContent='확인 중…';
+    try{
+      const supported=window.isSecureContext&&'Notification'in window&&'serviceWorker'in navigator&&'PushManager'in window;
+      const registration=supported?await navigator.serviceWorker.getRegistration():null,subscription=registration?await registration.pushManager.getSubscription():null;
+      let server={};try{server=await api1202('/api/push/diagnostics')}catch(error){server={error:error.message}}
+      panel.innerHTML=`<b>${supported&&Notification.permission==='granted'&&subscription&&Number(server.subscriptions)>0?'앱 알림 연결 정상':'알림 연결을 확인해주세요.'}</b><span>브라우저 지원 <strong>${supported?'지원':'미지원'}</strong></span><span>권한 <strong>${supported?Notification.permission:'미지원'}</strong></span><span>현재 기기 구독 <strong>${subscription?'있음':'없음'}</strong></span><span>활성 서버 구독 <strong>${Number(server.subscriptions||0)}개</strong></span><span>서버 버전 <strong>${esc1202(server.workerVersion||'-')}</strong></span>`;
+    }catch(error){panel.textContent=error.message||'상태를 확인하지 못했습니다.'}
+  }
+  window.addEventListener('change',event=>{if(event.target?.matches?.('#notificationToggle')){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();toggleNotifications1202(event.target.checked)}},true);
+  window.addEventListener('click',event=>{
+    const login=event.target.closest?.('#studentLoginSubmit,#adminLoginSubmit,#confirmGuestEntry');if(login){const keep=document.querySelector(`${login.closest('.overlay')?'#'+login.closest('.overlay').id:''} .keep-login-v1202 input`)?.checked??true;localStorage.setItem(KEEP_KEY,keep?'1':'0');window.baemoonSetLoginPersistence?.(keep).catch?.(()=>{});setTimeout(()=>registerLatestDevice1202().then(()=>{if('Notification'in window&&Notification.permission==='granted')saveCurrentPush1202().catch(()=>{})}).catch(()=>{}),1800)}
+    const test=event.target.closest?.('#testNotificationV1202');if(test){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();(async()=>{test.disabled=true;try{await saveCurrentPush1202({requestPermission:true});const result=await api1202('/api/push/test',{method:'POST',body:{deviceId:deviceId1202(),sessionId:sessionId1202()}});window.baemoonApp?.toast?.(`테스트 알림 전송 완료 · ${Number(result.sent||0)}개`)}catch(error){window.baemoonApp?.toast?.(error.message||'테스트 알림에 실패했습니다.')}finally{test.disabled=false}})();return}
+    const diagnostic=event.target.closest?.('#diagnoseNotificationV1202');if(diagnostic){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();diagnose1202();return}
+  },true);
+
+  function ensureReviewModal1202(){
+    let overlay=document.querySelector('#reviewModalV1202');if(overlay)return overlay;
+    overlay=document.createElement('div');overlay.id='reviewModalV1202';overlay.className='review-modal-v1202';overlay.hidden=true;
+    overlay.innerHTML='<section role="dialog" aria-modal="true"><button type="button" class="review-close-v1202" data-close-review-v1202>×</button><p class="eyebrow dark">BOOTH REVIEW</p><h2 id="reviewTitleV1202">후기</h2><p id="reviewMetaV1202"></p><div id="reviewStarsV1202" class="review-stars-v1202"></div><textarea id="reviewTextV1202" maxlength="300" placeholder="후기를 입력해주세요."></textarea><div id="reviewReadV1202" hidden></div><footer><button type="button" id="deleteReviewV1202" hidden>후기 삭제</button><button type="button" data-close-review-v1202>닫기</button><button type="button" id="saveReviewV1202">후기 저장</button></footer></section>';
+    document.body.append(overlay);overlay.addEventListener('click',event=>{if(event.target===overlay||event.target.closest('[data-close-review-v1202]')){overlay.classList.remove('open');setTimeout(()=>overlay.hidden=true,160)}});return overlay;
+  }
+  function findParticipation1202(id){return (window.firebaseCache?.participations||[]).find(item=>String(item.id)===String(id))}
+  function findReview1202(participationId){return (window.firebaseCache?.reviews||[]).find(item=>String(item.participation_id||item.participationId)===String(participationId))}
+  function starText1202(value){return '★'.repeat(Math.max(0,Number(value)||0))+'☆'.repeat(Math.max(0,5-(Number(value)||0)))}
+  function openReview1202(participationId){
+    const overlay=ensureReviewModal1202(),participation=findParticipation1202(participationId),review=findReview1202(participationId);reviewWriteId1202=String(participationId);reviewWriteRating1202=0;
+    overlay.querySelector('#reviewTitleV1202').textContent=review?'후기 보기':'후기';overlay.querySelector('#reviewMetaV1202').textContent=`${participation?.festival_name||participation?.festivalName||'행사'} · ${participation?.booth_name||participation?.boothName||'부스'}`;
+    const stars=overlay.querySelector('#reviewStarsV1202'),textarea=overlay.querySelector('#reviewTextV1202'),read=overlay.querySelector('#reviewReadV1202'),save=overlay.querySelector('#saveReviewV1202'),del=overlay.querySelector('#deleteReviewV1202');del.hidden=true;del.dataset.reviewId='';
+    if(review){stars.innerHTML=`<b>${starText1202(review.rating)}</b><span>${Number(review.rating||0).toFixed(1)}점</span>`;textarea.hidden=true;read.hidden=false;read.textContent=review.review_text||'';save.hidden=true}
+    else{stars.innerHTML=[1,2,3,4,5].map(value=>`<button type="button" data-star-v1202="${value}" aria-label="${value}점">☆</button>`).join('')+'<span>별점을 선택해주세요.</span>';textarea.hidden=false;textarea.value='';read.hidden=true;save.hidden=false}
+    overlay.hidden=false;requestAnimationFrame(()=>overlay.classList.add('open'));
+  }
+  window.__openReviewV1202=openReview1202;
+  async function saveReview1202(){
+    const overlay=ensureReviewModal1202(),text=overlay.querySelector('#reviewTextV1202').value.trim(),button=overlay.querySelector('#saveReviewV1202');
+    if(!reviewWriteRating1202)return window.baemoonApp?.toast?.('별점을 선택해주세요.');if(text.length<2)return window.baemoonApp?.toast?.('후기를 2자 이상 입력해주세요.');
+    button.disabled=true;try{const result=await api1202('/api/me/review',{method:'POST',body:{participationId:reviewWriteId1202,review:text,rating:reviewWriteRating1202}});window.firebaseCache.reviews=[result.review,...(window.firebaseCache.reviews||[]).filter(item=>String(item.participation_id||item.participationId)!==reviewWriteId1202)];overlay.classList.remove('open');setTimeout(()=>overlay.hidden=true,160);renderMyReviews1202(true);ratingCache1202.at=0;window.baemoonApp?.toast?.('후기를 저장했습니다. 작성 후에는 수정할 수 없습니다.')}catch(error){window.baemoonApp?.toast?.(error.message||'후기를 저장하지 못했습니다.')}finally{button.disabled=false}
+  }
+  window.__saveReviewV1202=saveReview1202;
+  window.addEventListener('click',event=>{
+    const star=event.target.closest?.('[data-star-v1202]');if(star){event.preventDefault();reviewWriteRating1202=Number(star.dataset.starV1202);const wrap=star.closest('#reviewStarsV1202');wrap.querySelectorAll('button').forEach(button=>button.textContent=Number(button.dataset.starV1202)<=reviewWriteRating1202?'★':'☆');wrap.querySelector('span').textContent=`${reviewWriteRating1202}점`;return}
+    const del=event.target.closest?.('#deleteReviewV1202');if(del){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();(async()=>{const id=del.dataset.reviewId;if(!id)return;const ok=window.__bmAppConfirmV1130?await window.__bmAppConfirmV1130('후기 삭제','이 후기를 삭제할까요?','삭제'):confirm('후기를 삭제할까요?');if(!ok)return;del.disabled=true;try{await api1202('/api/admin/reviews/delete',{method:'POST',body:{id}});ensureReviewModal1202().classList.remove('open');setTimeout(()=>ensureReviewModal1202().hidden=true,160);await renderAdminReviews1202(true);ratingCache1202.at=0;window.baemoonApp?.toast?.('후기를 삭제했습니다.')}catch(error){window.baemoonApp?.toast?.(error.message||'후기를 삭제하지 못했습니다.')}finally{del.disabled=false}})();return}
+    const save=event.target.closest?.('#saveReviewV1202');if(save){event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();saveReview1202();return}
+  },true);
+  function renderMyReviews1202(force=false){
+    const list=document.querySelector('#myParticipationListV1136'),count=document.querySelector('#myParticipationCountV1136');if(!list||reviewRenderBusy1202)return;
+    const items=window.firebaseCache?.participations||[],reviews=window.firebaseCache?.reviews||[];
+    const signature=items.map(item=>`${item.id}:${reviews.find(r=>String(r.participation_id||r.participationId)===String(item.id))?.id||''}`).join('|');if(!force&&list.dataset.v1202Signature===signature)return;
+    reviewRenderBusy1202=true;list.dataset.v1202Signature=signature;count&&(count.textContent=`${items.length}건`);
+    list.innerHTML=items.length?items.map(item=>{const review=reviews.find(r=>String(r.participation_id||r.participationId)===String(item.id));return `<article class="my-review-tile-v1202"><small>${esc1202(item.festival_name||item.festivalName||'행사')}</small><b>${esc1202(item.booth_name||item.boothName||'부스')}</b><button type="button" data-write-review-v1136="${esc1202(item.id)}">${review?'후기 보기':'후기'}</button></article>`}).join(''):'<div class="festival-empty">아직 참여 완료된 부스가 없습니다.</div>';reviewRenderBusy1202=false;
+  }
+  window.__renderMyReviewsV1202=renderMyReviews1202;
+  let adminReviews1202=[];
+  async function renderAdminReviews1202(force=false){
+    if(window.baemoonApp?.session?.()?.role!=='admin')return;const list=document.querySelector('#adminReviewListV1136');if(!list)return;
+    try{const result=await window.baemoonFirebase?.getAdminReviews?.({force})||await api1202('/api/admin/reviews');adminReviews1202=result.reviews||[];const signature=adminReviews1202.map(item=>`${item.id}:${item.updated_at||item.updatedAt}:${item.rating}`).join('|');if(!force&&list.dataset.v1202Signature===signature)return;list.dataset.v1202Signature=signature;list.innerHTML=adminReviews1202.length?adminReviews1202.map(item=>`<button type="button" class="admin-review-tile-v1202" data-admin-review-v1202="${esc1202(item.id)}"><b>${esc1202(item.display_name||'참여자')}</b><small>${esc1202(item.booth_name||'부스')}</small></button>`).join(''):'<div class="admin-empty">등록된 후기가 없습니다.</div>';const sub=document.querySelector('#adminReviewsV1136 .admin-participation-head small');if(sub&&sub.textContent!=='학번과 이름을 누르면 별점과 후기를 확인합니다.')sub.textContent='학번과 이름을 누르면 별점과 후기를 확인합니다.'}catch(error){const message=error.message||'후기를 불러오지 못했습니다.';if(list.textContent!==message)list.innerHTML=`<div class="admin-empty">${esc1202(message)}</div>`}
+  }
+  function openAdminReview1202(id){const item=adminReviews1202.find(row=>String(row.id)===String(id));if(!item)return;const overlay=ensureReviewModal1202();overlay.querySelector('#reviewTitleV1202').textContent=item.display_name||'학생 후기';overlay.querySelector('#reviewMetaV1202').textContent=`${item.festival_name||'행사'} · ${item.booth_name||'부스'}`;overlay.querySelector('#reviewStarsV1202').innerHTML=`<b>${starText1202(item.rating)}</b><span>${Number(item.rating||0).toFixed(1)}점</span>`;overlay.querySelector('#reviewTextV1202').hidden=true;const read=overlay.querySelector('#reviewReadV1202');read.hidden=false;read.textContent=item.review_text||'';overlay.querySelector('#saveReviewV1202').hidden=true;const del=overlay.querySelector('#deleteReviewV1202');del.hidden=false;del.dataset.reviewId=String(item.id);overlay.hidden=false;requestAnimationFrame(()=>overlay.classList.add('open'))}
+  window.__openAdminReviewV1202=openAdminReview1202;
+  window.addEventListener('click',event=>{const card=event.target.closest?.('[data-admin-review-v1202]');if(card){event.preventDefault();openAdminReview1202(card.dataset.adminReviewV1202)}},true);
+
+  async function decorateRatings1202(){
+    const festival=typeof selectedFestival==='function'?selectedFestival():null;if(!festival?.id)return;
+    try{if(ratingCache1202.festivalId!==String(festival.id)||Date.now()-ratingCache1202.at>30000){const result=await window.baemoonFirebase?.getReviewSummary?.(festival.id);ratingCache1202={at:Date.now(),festivalId:String(festival.id),data:result?.ratings||[]}}
+      document.querySelectorAll('#reservationList [data-reserve-booth]').forEach(button=>{const id=String(button.dataset.reserveBooth),row=ratingCache1202.data.find(item=>String(item.booth_id||item.boothId)===id);let badge=button.querySelector('.booth-rating-v1202');if(!badge){badge=document.createElement('span');badge.className='booth-rating-v1202';button.querySelector('h3')?.insertAdjacentElement('afterend',badge)}{const text=row?`★ ${Number(row.average_rating||0).toFixed(1)} · ${Number(row.review_count||0)}개`:'아직 평점 없음';if(badge.textContent!==text)badge.textContent=text}})
+    }catch(error){console.warn('rating summary failed',error)}
+  }
+  function reorderFestival1202(){
+    const tabs=document.querySelector('#festivalTabs'),eventsTab=tabs?.querySelector('[data-tab="events"]'),reserveTab=tabs?.querySelector('[data-tab="reserve"]');if(eventsTab&&reserveTab&&eventsTab.nextElementSibling!==reserveTab)tabs.insertBefore(eventsTab,reserveTab);
+    const events=document.querySelector('#festivalSectionEventsV1136,.festival-panel[data-panel="events"]'),reserve=document.querySelector('#festivalSectionReserveV1136,.festival-panel[data-panel="reserve"]');if(events&&reserve&&events.nextElementSibling!==reserve)reserve.parentElement.insertBefore(events,reserve);
+  }
+  function guide1202(){const description=document.querySelector('#festivalDescription');if(description)description.hidden=true;const excerpt=document.querySelector('.festival-description-excerpt-v1201');if(excerpt)excerpt.hidden=true;const button=document.querySelector('#festivalMoreV1201');if(button){button.textContent='상세보기';button.classList.add('festival-more-small-v1202')}}
+  function party1202(){const wrap=document.querySelector('#reservationPartyButtonsV1144');if(wrap){wrap.classList.add('party-buttons-centered-v1202');const label=document.querySelector('#reservationPartySizeLabel');if(label&&label.nextElementSibling!==wrap)label.insertAdjacentElement('afterend',wrap)}}
+  function expectedQueue1202(){
+    const current=window.baemoonApp?.session?.(),festivals=window.firebaseCache?.festivals||[];
+    document.querySelectorAll('#myQueueList article').forEach(card=>{const button=card.querySelector('[data-cancel-queue-v1143],[data-cancel-queue]'),id=button?.dataset.cancelQueueV1143||button?.dataset.cancelQueue;if(!id)return;const item=(window.firebaseCache?.queueEntries||[]).find(row=>String(row.id)===String(id));if(!item)return;const festival=festivals.find(f=>String(f.id)===String(item.festivalId||item.festival_id)),booth=festival?.booths?.find(b=>String(b.id)===String(item.boothId||item.booth_id));const ahead=Math.max(0,Number(item.aheadCount??Math.max(0,Number(item.queueNumber||item.queue_number||1)-1))),duration=Math.max(1,Number(booth?.duration||item.duration||15)),minutes=ahead*duration;let label=card.querySelector('.queue-expected-v1202');if(!label){label=document.createElement('small');label.className='queue-expected-v1202';card.querySelector('div')?.append(label)}{const text=item.status==='called'?'지금 참여 순서입니다.':ahead===0?'곧 참여 예정':`앞 ${ahead}팀 · 약 ${minutes}분 후 예상`;if(label.textContent!==text)label.textContent=text}})
+  }
+  function ui1202(){
+    document.documentElement.dataset.baemoonVersion=VERSION;ensureKeepLogin1202();integrateNotifications1202();reorderFestival1202();guide1202();party1202();renderMyReviews1202();expectedQueue1202();
+    document.querySelectorAll('[data-app-version],.app-version').forEach(element=>element.textContent=(element.textContent||'').replace(/v?(?:11\.\d+|12\.01)/g,'v12.03'));
+    const logoutText=document.querySelector('#logoutButton b');if(logoutText)logoutText.textContent='로그아웃';
+    if(window.baemoonApp?.state?.screen==='festival'){decorateRatings1202();renderAdminReviews1202(false)}
+  }
+  let queued1202=false;const observer1202=new MutationObserver(()=>{if(queued1202)return;queued1202=true;requestAnimationFrame(()=>{queued1202=false;ui1202()})});
+  (async()=>{
+    for(let i=0;i<180&&!window.__firebaseRuntimeReady;i++)await sleep1202(100);
+    installApi1202();observer1202.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class','hidden']});ui1202();
+    const current=window.baemoonApp?.session?.();if(current){await registerLatestDevice1202().catch(()=>{});if('Notification'in window&&Notification.permission==='granted')saveCurrentPush1202().catch(()=>{})}
+    let lastSessionUid1202=String(current?.uid||'');setInterval(()=>{const uid=String(window.baemoonApp?.session?.()?.uid||'');if(uid&&uid!==lastSessionUid1202){lastSessionUid1202=uid;registerLatestDevice1202().then(()=>{if('Notification'in window&&Notification.permission==='granted')saveCurrentPush1202().catch(()=>{})}).catch(()=>{})}else if(!uid)lastSessionUid1202=''},1000);
+    navigator.serviceWorker?.addEventListener?.('message',event=>{if(event.data?.payload?.type==='check-in')closeQr1202()});
+    window.addEventListener('baemoon:push-received',event=>{if(event.detail?.type==='check-in')closeQr1202()});
+    setInterval(()=>{if(!document.hidden){expectedQueue1202();if(window.baemoonApp?.state?.screen==='my')renderMyReviews1202()}},15000);
+    console.info('Baemoon v12.03 features ready');
+  })().catch(error=>console.error('v12.03 initialization failed',error));
+})();
+
+
+/* ===== v12.03 admin rosters · check-in refresh · guest resume · layout fixes ===== */
+(()=>{
+  if(window.__BAEMOON_FEATURES_1203__)return;
+  window.__BAEMOON_FEATURES_1203__=true;
+  const esc1203=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+  const sleep1203=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  let myRefreshBusy1203=false,checkinBusy1203=false,checkinBaseline1203=null;
+  const shownCheckins1203=new Set();
+
+  function ensureAdminRosterModal1203(){
+    let overlay=document.querySelector('#adminLiveRosterV1203');
+    if(overlay)return overlay;
+    overlay=document.createElement('div');
+    overlay.id='adminLiveRosterV1203';overlay.className='admin-live-roster-v1203';overlay.hidden=true;
+    overlay.innerHTML='<section role="dialog" aria-modal="true"><button type="button" class="admin-live-roster-close-v1203" data-close-live-roster-v1203>×</button><p class="eyebrow dark">LIVE ROSTER</p><h2 id="adminLiveRosterTitleV1203">명단</h2><p id="adminLiveRosterMetaV1203"></p><div id="adminLiveRosterListV1203"></div><footer><button type="button" data-close-live-roster-v1203>닫기</button></footer></section>';
+    document.body.append(overlay);
+    overlay.addEventListener('click',event=>{if(event.target===overlay||event.target.closest('[data-close-live-roster-v1203]')){overlay.classList.remove('open');setTimeout(()=>overlay.hidden=true,150)}});
+    return overlay;
+  }
+  function displayPerson1203(item){
+    const role=String(item.participant_role||item.participantRole||'student');
+    const name=String(item.display_name||item.displayName||item.user||item.name||'참여자');
+    const code=String(item.guest_code||item.guestCode||'');
+    return role==='guest'?`${name}${code?` #${code}`:''}`:name;
+  }
+  async function openAdminRoster1203(kind){
+    const overlay=ensureAdminRosterModal1203(),title=overlay.querySelector('#adminLiveRosterTitleV1203'),meta=overlay.querySelector('#adminLiveRosterMetaV1203'),list=overlay.querySelector('#adminLiveRosterListV1203');
+    overlay.hidden=false;requestAnimationFrame(()=>overlay.classList.add('open'));title.textContent=kind==='waiting'?'현재 대기 중 명단':'현재 예약 인원 명단';meta.textContent='최신 서버 명단을 불러오는 중입니다.';list.innerHTML='<div class="admin-empty">불러오는 중…</div>';
+    try{
+      await window.baemoonFirebase?.getAdminStats?.({force:true});
+      const payload=window.firebaseCache?.adminReservationStats||{};
+      const rows=kind==='waiting'?(payload.queue||[]):(payload.reservations||window.firebaseCache?.reservations||[]);
+      meta.textContent=`${rows.length}팀 · 이름을 눌러 확인하는 로그인 현황과 같은 목록입니다.`;
+      list.innerHTML=rows.length?rows.map(item=>{
+        const time=typeof formatReservationSlot==='function'?formatReservationSlot(item.time||'즉시 예약'):(item.time||'즉시 예약');
+        const status=kind==='waiting'?`${Number(item.queue_number||item.queueNumber||0)}번 · ${item.status==='called'?'호출됨':'대기 중'} · ${Number(item.call_count||item.callCount||0)}/3`:`${Number(item.group_size||item.groupSize||1)}명 예약`;
+        return `<article><b>${esc1203(displayPerson1203(item))}</b><span>${esc1203(item.booth_name||item.boothName||'부스')}</span><small>${esc1203(time)} · ${esc1203(status)}</small></article>`;
+      }).join(''):'<div class="admin-empty">표시할 명단이 없습니다.</div>';
+    }catch(error){meta.textContent='명단을 불러오지 못했습니다.';list.innerHTML=`<div class="admin-empty">${esc1203(error.message||'잠시 후 다시 시도해주세요.')}</div>`}
+  }
+  function decorateAdminStats1203(){
+    const reserved=document.querySelector('#statsReservedPeople')?.closest('article');
+    const waiting=document.querySelector('#statsWaitingCount')?.closest('article');
+    [[reserved,'reserved','예약 인원 명단 보기'],[waiting,'waiting','대기 중 명단 보기']].forEach(([article,kind,label])=>{
+      if(!article)return;article.dataset.adminRosterV1203=kind;article.tabIndex=0;article.setAttribute('role','button');article.setAttribute('aria-label',label);article.classList.add('admin-stat-action-v1203');
+      let cue=article.querySelector('.admin-stat-cue-v1203');if(!cue){cue=document.createElement('i');cue.className='admin-stat-cue-v1203';cue.textContent='명단 보기';article.append(cue)}
+    });
+  }
+  window.addEventListener('click',event=>{const article=event.target.closest?.('[data-admin-roster-v1203]');if(article){event.preventDefault();openAdminRoster1203(article.dataset.adminRosterV1203)}},true);
+  window.addEventListener('keydown',event=>{const article=event.target.closest?.('[data-admin-roster-v1203]');if(article&&(event.key==='Enter'||event.key===' ')){event.preventDefault();openAdminRoster1203(article.dataset.adminRosterV1203)}},true);
+
+  function reorderManager1203(){
+    const tabs=document.querySelector('#managerTabs');if(!tabs)return;
+    ['events','booths','menus'].forEach(key=>{const tab=tabs.querySelector(`[data-manager-tab="${key}"]`);if(tab)tabs.append(tab)});
+    const firstPanel=document.querySelector('.manager-panel[data-manager-panel]'),parent=firstPanel?.parentElement;if(parent)['events','booths','menus'].forEach(key=>{const panel=parent.querySelector(`.manager-panel[data-manager-panel="${key}"]`);if(panel)parent.append(panel)});
+  }
+  function ensureFestivalAdminQuickToggle1203(){
+    const session=window.baemoonApp?.session?.();const hub=document.querySelector('[data-screen="festivals"]');const editor=document.querySelector('#festivalInlineAdminEditor');
+    if(!hub||!editor||session?.role!=='admin')return;
+    let button=document.querySelector('#festivalAdminQuickToggleV1203');
+    if(!button){button=document.createElement('button');button.type='button';button.id='festivalAdminQuickToggleV1203';button.className='festival-admin-quick-toggle-v1203';hub.querySelector('.festival-hub-heading')?.insertAdjacentElement('afterend',button);button.addEventListener('click',()=>{editor.hidden=false;editor.open=!editor.open;button.textContent=editor.open?'행사 관리 닫기':'행사 관리 열기';if(editor.open)editor.scrollIntoView({behavior:'smooth',block:'start'})})}
+    button.hidden=false;button.textContent=editor.open?'행사 관리 닫기':'행사 관리 열기';
+  }
+
+  async function refreshMyExperience1203({force=false,render=true}={}){
+    const current=window.baemoonApp?.session?.();if(!current?.uid||!['student','guest'].includes(current.role)||myRefreshBusy1203||!window.baemoonFirebase?.getMyServerOverview)return null;
+    myRefreshBusy1203=true;
+    try{
+      const payload=await window.baemoonFirebase.getMyServerOverview({force});
+      window.firebaseCache.reservations=Array.isArray(payload?.reservations)?payload.reservations.map(row=>typeof normalizeReservation==='function'?normalizeReservation(row):row):(window.firebaseCache.reservations||[]);
+      window.firebaseCache.queueEntries=Array.isArray(payload?.queue)?payload.queue.map(row=>typeof normalizeQueue==='function'?normalizeQueue(row):row):(window.firebaseCache.queueEntries||[]);
+      window.firebaseCache.participations=Array.isArray(payload?.participations)?payload.participations:[];
+      window.firebaseCache.reviews=Array.isArray(payload?.reviews)?payload.reviews:[];
+      if(render){window.__renderMyReviewsV1202?.(true);}
+      return payload;
+    }catch(error){console.warn('v12.03 my overview refresh failed',error);return null}finally{myRefreshBusy1203=false}
+  }
+  async function showCheckin1203(payload={}){
+    const key=String(payload.messageId||payload.reservationId||payload.reservation_id||payload.id||`${payload.boothName||payload.booth_name||'booth'}-${payload.checkedInAt||payload.checked_in_at||''}`);
+    if(key&&shownCheckins1203.has(key))return;
+    if(key)shownCheckins1203.add(key);
+    window.__closeReservationQrV1202?.();
+    await refreshMyExperience1203({force:true,render:true});
+    const text=`${payload.boothName||payload.booth_name||'부스'} 체크인이 완료되었습니다.`;
+    if(window.__bmAppAlertV1130)await window.__bmAppAlertV1130('체크인이 완료되었습니다',text);else window.baemoonApp?.toast?.(text);
+    try{renderMy();renderHomeReservations()}catch{}
+  }
+  async function pollCheckin1203(){
+    const current=window.baemoonApp?.session?.();if(document.hidden||checkinBusy1203||!current?.uid||!['student','guest'].includes(current.role))return;
+    checkinBusy1203=true;
+    try{
+      const beforeIds=new Set((window.firebaseCache?.reservations||[]).map(item=>String(item.id)));
+      const payload=await refreshMyExperience1203({force:true,render:true});if(!payload)return;
+      const participations=Array.isArray(payload.participations)?payload.participations:[];
+      const currentIds=new Set(participations.map(item=>String(item.id)));
+      if(checkinBaseline1203===null){checkinBaseline1203=currentIds;return}
+      const newItem=participations.find(item=>!checkinBaseline1203.has(String(item.id))&&(beforeIds.has(String(item.reservation_id||item.reservationId||''))||String(window.baemoonApp?.state?.currentReservationId||'')===String(item.reservation_id||item.reservationId||'')));
+      checkinBaseline1203=currentIds;
+      if(newItem)await showCheckin1203(newItem);
+    }finally{checkinBusy1203=false}
+  }
+  function keepParticipationVisible1203(){
+    const current=window.baemoonApp?.session?.(),section=document.querySelector('#myParticipationSectionV1136');if(!section)return;
+    section.hidden=!['student','guest'].includes(current?.role);
+    if(!section.hidden&&!(window.firebaseCache?.participations||[]).length&&!myRefreshBusy1203){const list=document.querySelector('#myParticipationListV1136');if(list&&!list.querySelector('.my-review-tile-v1202'))list.innerHTML='<div class="festival-empty">참여 기록을 불러오는 중…</div>';refreshMyExperience1203({force:true,render:true})}
+  }
+
+  const baseRenderAdminStatsV1203=typeof renderAdminStats==='function'?renderAdminStats:null;
+  if(baseRenderAdminStatsV1203){renderAdminStats=function(){baseRenderAdminStatsV1203();decorateAdminStats1203()};if(window.baemoonApp)window.baemoonApp.renderAdminStats=renderAdminStats}
+  const baseRenderMyV1203=typeof renderMy==='function'?renderMy:null;
+  if(baseRenderMyV1203){renderMy=function(){baseRenderMyV1203();keepParticipationVisible1203()};if(window.baemoonApp)window.baemoonApp.renderMy=renderMy}
+  const baseRenderFestivalHubV1203=typeof renderFestivalHub==='function'?renderFestivalHub:null;
+  if(baseRenderFestivalHubV1203){renderFestivalHub=function(){baseRenderFestivalHubV1203();ensureFestivalAdminQuickToggle1203();reorderManager1203()};if(window.baemoonApp)window.baemoonApp.renderFestivalHub=renderFestivalHub}
+
+  function handleNotificationDeepLink1203(){
+    const current=window.baemoonApp?.session?.();if(!current)return;
+    const params=new URLSearchParams(location.search),open=params.get('open');
+    if(!['queue','reservations','check-in','my'].includes(String(open||'')))return;
+    try{route('my')}catch{}
+    params.delete('open');const query=params.toString();history.replaceState({},'',`${location.pathname}${query?`?${query}`:''}${location.hash}`);
+  }
+  function ui1203(){
+    document.documentElement.dataset.baemoonVersion='12.03';
+    document.querySelector('#notificationToolsV1202')?.remove();
+    decorateAdminStats1203();reorderManager1203();ensureFestivalAdminQuickToggle1203();keepParticipationVisible1203();handleNotificationDeepLink1203();
+    document.querySelectorAll('[data-app-version],.app-version').forEach(element=>element.textContent=(element.textContent||'').replace(/v?(?:11\.\d+|12\.0[12])/g,'v12.03'));
+  }
+  let queued1203=false;const observer1203=new MutationObserver(()=>{if(queued1203)return;queued1203=true;requestAnimationFrame(()=>{queued1203=false;ui1203()})});
+  observer1203.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class','hidden','open']});
+  navigator.serviceWorker?.addEventListener?.('message',event=>{const payload=event.data?.payload;if(payload?.type==='check-in')showCheckin1203(payload)});
+  window.addEventListener('baemoon:push-received',event=>{if(event.detail?.type==='check-in')showCheckin1203(event.detail)});
+  ui1203();setInterval(()=>pollCheckin1203(),3500);document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollCheckin1203()});
+  console.info('Baemoon v12.03 features ready');
+})();
